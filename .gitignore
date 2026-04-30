@@ -1,0 +1,10 @@
+backups/
+node_modules/
+dist/
+.vite/
+
+.DS_Store
+**/.DS_Store
+
+memory/.obsidian/
+assets/placeholders/graph/

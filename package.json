@@ -1,0 +1,18 @@
+{
+  "name": "golova-works-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "images:audit": "node tools/optimize-memory-images.mjs audit",
+    "images:write": "node tools/optimize-memory-images.mjs write",
+    "images:avif": "node tools/optimize-memory-images.mjs write --format=avif",
+    "images:avif-replace": "node tools/optimize-memory-images.mjs avif-replace",
+    "media:scaffold": "node tools/scaffold-project-media.mjs",
+    "videos:audit": "node tools/optimize-memory-videos.mjs audit",
+    "videos:mp4": "node tools/optimize-memory-videos.mjs mp4",
+    "videos:mp4-replace": "node tools/optimize-memory-videos.mjs mp4-replace"
+  },
+  "dependencies": {
+    "sharp": "^0.34.5"
+  }
+}

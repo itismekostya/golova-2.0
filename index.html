@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Golova</title>
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <link rel="stylesheet" href="./src/styles.css?v=20260429-03" />
+  </head>
+  <body>
+    <script>
+      (() => {
+        const hasProjectQuery = new URLSearchParams(window.location.search).has("project");
+        const hasLegacyProjectHash = typeof window.location.hash === "string" && window.location.hash.startsWith("#project/");
+        if (hasProjectQuery || hasLegacyProjectHash) {
+          document.body.classList.add("is-deep-mode");
+          document.body.classList.add("is-project-route-loading");
+        } else {
+          document.body.classList.add("is-head-modal-open");
+        }
+      })();
+    </script>
+    <div class="app-shell">
+      <aside class="site-info" aria-label="Golova contacts">
+        <p class="site-info-title ui-text-line">Golova</p>
+        <p class="site-info-line ui-text-line">Location: Earth</p>
+        <p class="site-info-line ui-text-line">
+          Mail:
+          <span class="site-info-mail">info@golova.works</span>
+        </p>
+        <p class="site-info-line ui-text-line">
+          Social:
+          <a
+            class="site-info-social"
+            href="https://www.instagram.com/golova.works/"
+            target="_blank"
+            rel="noopener noreferrer"
+            >instagram ↗</a
+          >
+        </p>
+        <p class="site-info-description">
+          Hi, and welcome to Golova. Here, we preserve the narratives we've created and cherish. They are manifested as
+          names, identities, artifacts, and sometimes as tales. Enjoy the journey.
+        </p>
+      </aside>
+      <button id="deepProjectBack" class="deep-project-back" type="button" aria-label="Back" hidden></button>
+      <aside id="deepProjectInfo" class="deep-project-info" aria-label="Project info" hidden></aside>
+      <div id="headBackdrop" class="head-backdrop" aria-hidden="true"></div>
+      <button id="headWidget" class="head-widget" type="button" aria-label="Open Golova head" aria-pressed="false">
+        <span id="headCanvasHost" class="head-canvas-host" aria-hidden="true"></span>
+      </button>
+
+      <header class="top-bar">
+        <div class="brand">
+          <span class="brand-dot" aria-hidden="true"></span>
+          <span class="brand-text">golova works</span>
+        </div>
+        <nav id="filters" class="filters" aria-label="Project type filters"></nav>
+      </header>
+
+      <button id="collisionToggle" class="collision-toggle" type="button" aria-pressed="false" hidden>collision: off</button>
+
+      <main id="stage" class="stage lod-far" aria-label="Interactive portfolio map">
+        <div id="world" class="world"></div>
+      </main>
+    </div>
+
+    <script type="module" src="./src/main.js?v=20260429-14"></script>
+  </body>
+</html>
