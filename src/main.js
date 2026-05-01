@@ -164,6 +164,7 @@ const CLEANED_BLACK_MATTE_PROXY_CACHE_LIMIT = 30;
 const USE_CONTENT_MEDIA_PREVIEWS = true;
 const USE_MOBILE_BOUNDED_FULL_MEDIA = true;
 const USE_GRAPH_MEDIA_PROXIES = false;
+const HEAD_INTERACTIVE_ROTATION_ENABLED = false;
 const DESKTOP_HEAD_MAX_PIXEL_RATIO = 2;
 const HEAD_MODEL_SRC = "./assets/head/golova_model.glb";
 const HEAD_USE_BAKED_TEXTURE = true;
@@ -360,6 +361,7 @@ let headCurrentScale = 1;
 let headCurrentY = 0;
 let headModelLoaded = false;
 let headPoseAnim = null;
+let headNeedsRender = true;
 let headRaycaster = null;
 let headPointerNdc = null;
 let headModelBounds = null;
@@ -4266,6 +4268,9 @@ function updateHeadPointerTargetFromClient(
     maxY = 1
   } = {}
 ) {
+  if (!HEAD_INTERACTIVE_ROTATION_ENABLED) {
+    return;
+  }
   const viewportWidth = window.innerWidth || state.stageWidth || 1;
   const viewportHeight = window.innerHeight || state.stageHeight || 1;
   if (!Number.isFinite(clientX) || !Number.isFinite(clientY) || viewportWidth <= 0 || viewportHeight <= 0) {
@@ -4333,10 +4338,16 @@ function updateHeadTargetForUiTouch(clientX, clientY) {
 }
 
 function stopHeadTouchAutoCenter() {
+  if (!HEAD_INTERACTIVE_ROTATION_ENABLED) {
+    return;
+  }
   headTouchAutoCenterActive = false;
 }
 
 function startHeadTouchAutoCenter() {
+  if (!HEAD_INTERACTIVE_ROTATION_ENABLED) {
+    return;
+  }
   headTouchAutoCenterActive = true;
 }
 
@@ -4480,6 +4491,7 @@ function setHeadModalOpen(nextOpen, { immediate = false } = {}) {
   if (changed) {
     resizeHeadRendererToHost(true);
   }
+  markHeadNeedsRender();
 }
 
 function onHeadWidgetActivate() {
@@ -4615,7 +4627,7 @@ function onDocumentPointerCancelForHeadPress(event) {
 
 function resizeHeadRendererToHost(force = false) {
   if (!headRenderer || !headCamera || !headCanvasHostEl) {
-    return;
+    return false;
   }
   const width = Math.max(1, Math.round(window.innerWidth || headCanvasHostEl.clientWidth || 1));
   const height = Math.max(1, Math.round(window.innerHeight || headCanvasHostEl.clientHeight || 1));
@@ -4626,7 +4638,7 @@ function resizeHeadRendererToHost(force = false) {
     height === headRenderHeight &&
     Math.abs(pixelRatio - headRenderPixelRatio) < 0.01
   ) {
-    return;
+    return false;
   }
   headRenderWidth = width;
   headRenderHeight = height;
@@ -4635,6 +4647,8 @@ function resizeHeadRendererToHost(force = false) {
   headRenderer.setSize(width, height, false);
   headCamera.aspect = width / Math.max(1, height);
   headCamera.updateProjectionMatrix();
+  headNeedsRender = true;
+  return true;
 }
 
 function configureHeadRendererPipeline(ThreeLib) {
@@ -4943,6 +4957,7 @@ function initHeadThreeScene() {
       headScene.add(headModelRoot);
       headModelLoaded = true;
       applyHeadTuning();
+      markHeadNeedsRender();
     },
     undefined,
     (error) => {
@@ -4978,10 +4993,24 @@ function bindHeadRendererContextEvents() {
         headModelLoaded = true;
         applyHeadTuning();
       }
-      scheduleMainFrame();
+      markHeadNeedsRender();
     },
     false
   );
+}
+
+function markHeadNeedsRender({ wake = true } = {}) {
+  headNeedsRender = true;
+  if (wake) {
+    scheduleMainFrame();
+  }
+}
+
+function shouldRunHeadFrame() {
+  if (!headRenderer || !headScene || !headCamera || document.hidden || headWidgetEl?.hidden) {
+    return false;
+  }
+  return headNeedsRender || Boolean(headPoseAnim);
 }
 
 function updateHeadWidgetFrame() {
@@ -4991,11 +5020,15 @@ function updateHeadWidgetFrame() {
   if (document.hidden || headWidgetEl?.hidden) {
     return;
   }
+  if (!shouldRunHeadFrame()) {
+    return;
+  }
   const now = typeof performance !== "undefined" ? performance.now() : Date.now();
   headLastRenderTime = now;
   resizeHeadRendererToHost();
   if (!headModelRoot || !headModelLoaded) {
     headRenderer.render(headScene, headCamera);
+    headNeedsRender = false;
     return;
   }
 
@@ -5015,7 +5048,7 @@ function updateHeadWidgetFrame() {
     headCurrentScale = pose.scale;
     headCurrentY = pose.y;
   }
-  if (headTouchAutoCenterActive) {
+  if (HEAD_INTERACTIVE_ROTATION_ENABLED && headTouchAutoCenterActive) {
     headPointerTargetX = lerp(headPointerTargetX, 0, HEAD_TOUCH_RETURN_AUTO_SMOOTH);
     headPointerTargetY = lerp(headPointerTargetY, 0, HEAD_TOUCH_RETURN_AUTO_SMOOTH);
     if (Math.abs(headPointerTargetX) < 0.0008 && Math.abs(headPointerTargetY) < 0.0008) {
@@ -5024,24 +5057,35 @@ function updateHeadWidgetFrame() {
       headTouchAutoCenterActive = false;
     }
   }
-  const useMobileDynamics = shouldUseMobileHeadDynamics();
-  const pointerSmooth = useMobileDynamics ? HEAD_POINTER_SMOOTH_MOBILE : HEAD_POINTER_SMOOTH_DESKTOP;
-  const rotationSmooth = useMobileDynamics ? HEAD_ROTATION_SMOOTH_MOBILE : HEAD_ROTATION_SMOOTH_DESKTOP;
-  headPointerX = lerp(headPointerX, headPointerTargetX, pointerSmooth);
-  headPointerY = lerp(headPointerY, headPointerTargetY, pointerSmooth);
-
   const baseRotationX = state.headModalOpen ? 0 : -0.1;
-  const gain = state.headModalOpen
-    ? (useMobileDynamics ? HEAD_ROTATION_GAIN_OPEN_MOBILE : HEAD_ROTATION_GAIN_OPEN_DESKTOP)
-    : (useMobileDynamics ? HEAD_ROTATION_GAIN_CLOSED_MOBILE : HEAD_ROTATION_GAIN_CLOSED_DESKTOP);
-  const targetRotationY = headPointerX * gain;
-  const targetRotationX = baseRotationX + headPointerY * gain;
-  headModelRoot.rotation.y += (targetRotationY - headModelRoot.rotation.y) * rotationSmooth;
-  headModelRoot.rotation.x += (targetRotationX - headModelRoot.rotation.x) * rotationSmooth;
+  if (HEAD_INTERACTIVE_ROTATION_ENABLED) {
+    const useMobileDynamics = shouldUseMobileHeadDynamics();
+    const pointerSmooth = useMobileDynamics ? HEAD_POINTER_SMOOTH_MOBILE : HEAD_POINTER_SMOOTH_DESKTOP;
+    const rotationSmooth = useMobileDynamics ? HEAD_ROTATION_SMOOTH_MOBILE : HEAD_ROTATION_SMOOTH_DESKTOP;
+    headPointerX = lerp(headPointerX, headPointerTargetX, pointerSmooth);
+    headPointerY = lerp(headPointerY, headPointerTargetY, pointerSmooth);
+
+    const gain = state.headModalOpen
+      ? (useMobileDynamics ? HEAD_ROTATION_GAIN_OPEN_MOBILE : HEAD_ROTATION_GAIN_OPEN_DESKTOP)
+      : (useMobileDynamics ? HEAD_ROTATION_GAIN_CLOSED_MOBILE : HEAD_ROTATION_GAIN_CLOSED_DESKTOP);
+    const targetRotationY = headPointerX * gain;
+    const targetRotationX = baseRotationX + headPointerY * gain;
+    headModelRoot.rotation.y += (targetRotationY - headModelRoot.rotation.y) * rotationSmooth;
+    headModelRoot.rotation.x += (targetRotationX - headModelRoot.rotation.x) * rotationSmooth;
+  } else {
+    headPointerTargetX = 0;
+    headPointerTargetY = 0;
+    headPointerX = 0;
+    headPointerY = 0;
+    headTouchAutoCenterActive = false;
+    headModelRoot.rotation.y = 0;
+    headModelRoot.rotation.x = baseRotationX;
+  }
   headModelRoot.scale.setScalar(headCurrentScale);
   headModelRoot.position.set(0, headCurrentY, 0);
 
   headRenderer.render(headScene, headCamera);
+  headNeedsRender = false;
 }
 
 function initHeadWidget({ startOpen = true } = {}) {
@@ -5059,11 +5103,13 @@ function initHeadWidget({ startOpen = true } = {}) {
   document.addEventListener("pointermove", onDocumentPointerMoveForHeadPress, true);
   document.addEventListener("pointerup", onDocumentPointerUpForHeadPress, true);
   document.addEventListener("pointercancel", onDocumentPointerCancelForHeadPress, true);
-  document.addEventListener("pointermove", onDocumentPointerMoveForHead, { passive: true });
-  document.addEventListener("touchstart", onDocumentTouchStartForHead, { passive: true });
-  document.addEventListener("touchmove", onDocumentTouchMoveForHead, { passive: true });
-  document.addEventListener("touchend", onDocumentTouchEndForHead, { passive: true });
-  document.addEventListener("touchcancel", onDocumentTouchEndForHead, { passive: true });
+  if (HEAD_INTERACTIVE_ROTATION_ENABLED) {
+    document.addEventListener("pointermove", onDocumentPointerMoveForHead, { passive: true });
+    document.addEventListener("touchstart", onDocumentTouchStartForHead, { passive: true });
+    document.addEventListener("touchmove", onDocumentTouchMoveForHead, { passive: true });
+    document.addEventListener("touchend", onDocumentTouchEndForHead, { passive: true });
+    document.addEventListener("touchcancel", onDocumentTouchEndForHead, { passive: true });
+  }
   window.addEventListener("blur", () => {
     headPressSession = null;
     stopHeadTouchAutoCenter();
@@ -10797,6 +10843,7 @@ function setWorldNumberProperty(name, value, { epsilon = 0.0005, unit = "" } = {
 function wakeGraph(frames = GRAPH_DIRTY_FRAME_COUNT) {
   const safeFrames = Math.max(1, Math.round(Number(frames) || GRAPH_DIRTY_FRAME_COUNT));
   graphDirtyFrames = Math.max(graphDirtyFrames, safeFrames);
+  scheduleMainFrame();
 }
 
 function consumeGraphDirtyFrame() {
@@ -10940,7 +10987,9 @@ function tick() {
     runGraphFrame();
   }
   updateHeadWidgetFrame();
-  scheduleMainFrame();
+  if (shouldRunGraphFrame() || shouldRunHeadFrame()) {
+    scheduleMainFrame();
+  }
 }
 
 function runGraphFrame() {
