@@ -1585,6 +1585,31 @@ body.is-deep-mode .project-node.is-deep-root.is-deep-root-media-hidden .project-
 
 }
 
+@media (max-width: 1024px), (pointer: coarse) {
+  .head-tuning-header,
+  .head-tuning-section,
+  .filters::before,
+  .deep-project-info,
+  .deep-project-back,
+  .head-backdrop,
+  body.is-head-modal-open .head-backdrop {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  .head-tuning-header,
+  .head-tuning-section,
+  .filters::before,
+  .deep-project-info,
+  .deep-project-back {
+    background: var(--menu-bg);
+  }
+
+  body.is-head-modal-open .head-backdrop {
+    background: rgba(255, 255, 255, 0.72);
+  }
+}
+
 @media (max-width: 720px) {
   .deep-project-info.is-mobile {
     width: calc(

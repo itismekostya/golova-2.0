@@ -160,6 +160,7 @@ const MOBILE_MEDIA_HYDRATION_BATCH_SIZE = 4;
 const DISABLE_ALL_VIDEO_MEDIA = false;
 const DISABLE_MOBILE_VIDEO_MEDIA = true;
 const HIDE_MOBILE_MOTION_MEDIA = true;
+const CLEANED_BLACK_MATTE_PROXY_CACHE_LIMIT = 30;
 const USE_CONTENT_MEDIA_PREVIEWS = true;
 const USE_MOBILE_BOUNDED_FULL_MEDIA = true;
 const USE_GRAPH_MEDIA_PROXIES = false;
@@ -187,7 +188,7 @@ const HEAD_TUNING_PANEL_ENABLED = false;
 const HEAD_TUNING_STORAGE_KEY = "golova-head-tuning-v2";
 const HEAD_TUNING_PRESETS_STORAGE_KEY = "golova-head-tuning-presets-v1";
 const HEAD_TUNING_UI_STORAGE_KEY = "golova-head-tuning-ui-v1";
-const HEAD_TUNING_HISTORY_LIMIT = 120;
+const HEAD_TUNING_HISTORY_LIMIT = 50;
 const HEAD_TUNING_DEFAULTS = Object.freeze({
   useBakedTexture: HEAD_USE_BAKED_TEXTURE,
   bakedTextureNeutralize: HEAD_BAKED_TEXTURE_NEUTRALIZE,
@@ -396,6 +397,7 @@ let mediaHydrationRafId = null;
 const worldCssVarCache = new Map();
 let graphDirtyFrames = GRAPH_INITIAL_DIRTY_FRAMES;
 let lastGraphLayoutZoom = Number.NaN;
+let mainRafId = null;
 
 function clearFocusedMediaTarget() {
   state.focusedMediaIndex = -1;
@@ -449,7 +451,7 @@ function bootstrap() {
     applyProjectGraphLocation({ animate: false });
     clearInitialProjectRouteLoadingState();
   }
-  requestAnimationFrame(tick);
+  scheduleMainFrame();
 }
 
 function clearInitialProjectRouteLoadingState() {
@@ -2325,8 +2327,60 @@ function createBlackMatteCleanedProxyUrl(imageElement) {
   });
 }
 
+function revokeObjectUrl(objectUrl) {
+  if (
+    typeof objectUrl !== "string" ||
+    !objectUrl.startsWith("blob:") ||
+    typeof URL === "undefined" ||
+    typeof URL.revokeObjectURL !== "function"
+  ) {
+    return;
+  }
+  try {
+    URL.revokeObjectURL(objectUrl);
+  } catch (_error) {
+    // Browser may already have released it.
+  }
+}
+
+function rememberCleanedBlackMatteProxyUrl(proxySrc, objectUrl) {
+  if (!proxySrc || !objectUrl) {
+    return;
+  }
+
+  const previous = cleanedBlackMatteProxyUrlBySrc.get(proxySrc);
+  if (previous && previous !== objectUrl) {
+    revokeObjectUrl(previous);
+  }
+  if (previous) {
+    cleanedBlackMatteProxyUrlBySrc.delete(proxySrc);
+  }
+
+  cleanedBlackMatteProxyUrlBySrc.set(proxySrc, objectUrl);
+  while (cleanedBlackMatteProxyUrlBySrc.size > CLEANED_BLACK_MATTE_PROXY_CACHE_LIMIT) {
+    const oldestKey = cleanedBlackMatteProxyUrlBySrc.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    const oldestUrl = cleanedBlackMatteProxyUrlBySrc.get(oldestKey);
+    cleanedBlackMatteProxyUrlBySrc.delete(oldestKey);
+    revokeObjectUrl(oldestUrl);
+  }
+}
+
+function clearCleanedBlackMatteProxyCache() {
+  for (const objectUrl of cleanedBlackMatteProxyUrlBySrc.values()) {
+    revokeObjectUrl(objectUrl);
+  }
+  cleanedBlackMatteProxyUrlBySrc.clear();
+  pendingBlackMatteProxyJobsBySrc.clear();
+}
+
 function queueBlackMatteProxyCleanup(mediaElement) {
   if (!(mediaElement instanceof HTMLImageElement)) {
+    return;
+  }
+  if (isMobileMediaMode()) {
     return;
   }
   const proxySrc = getMediaElementProxySrc(mediaElement);
@@ -2354,7 +2408,7 @@ function queueBlackMatteProxyCleanup(mediaElement) {
       if (!objectUrl) {
         return;
       }
-      cleanedBlackMatteProxyUrlBySrc.set(proxySrc, objectUrl);
+      rememberCleanedBlackMatteProxyUrl(proxySrc, objectUrl);
       if (
         mediaElement.isConnected &&
         mediaElement.dataset.proxyActive === "true" &&
@@ -4857,6 +4911,7 @@ function initHeadThreeScene() {
     alpha: true,
     powerPreference: "high-performance"
   });
+  bindHeadRendererContextEvents();
   configureHeadRendererPipeline(ThreeLib);
   headCanvasHostEl.textContent = "";
   headCanvasHostEl.append(headRenderer.domElement);
@@ -4899,8 +4954,41 @@ function initHeadThreeScene() {
   );
 }
 
+function bindHeadRendererContextEvents() {
+  const canvas = headRenderer?.domElement;
+  if (!canvas) {
+    return;
+  }
+
+  canvas.addEventListener(
+    "webglcontextlost",
+    (event) => {
+      event.preventDefault();
+      headModelLoaded = false;
+      headPoseAnim = null;
+    },
+    false
+  );
+  canvas.addEventListener(
+    "webglcontextrestored",
+    () => {
+      headLastRenderTime = 0;
+      resizeHeadRendererToHost(true);
+      if (headModelRoot) {
+        headModelLoaded = true;
+        applyHeadTuning();
+      }
+      scheduleMainFrame();
+    },
+    false
+  );
+}
+
 function updateHeadWidgetFrame() {
   if (!headRenderer || !headScene || !headCamera) {
+    return;
+  }
+  if (document.hidden || headWidgetEl?.hidden) {
     return;
   }
   const now = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -9799,11 +9887,20 @@ function bindEvents() {
     if (document.hidden) {
       clearPromotedDeepMediaElement();
       demoteConnectedDeepMediaToLightweight();
+      clearCleanedBlackMatteProxyCache();
+      runtimeMediaSizeByKey.clear();
+      worldCssVarCache.clear();
+      return;
     }
+    wakeGraph(8);
+    scheduleMainFrame();
   });
   window.addEventListener("pagehide", () => {
     clearPromotedDeepMediaElement();
     demoteConnectedDeepMediaToLightweight();
+    clearCleanedBlackMatteProxyCache();
+    runtimeMediaSizeByKey.clear();
+    worldCssVarCache.clear();
   });
 
   const handleViewportResize = () => {
@@ -10827,12 +10924,23 @@ function setTargetView(x, y, zoom, maxZoom = MAX_ZOOM) {
   wakeGraph();
 }
 
+function scheduleMainFrame() {
+  if (mainRafId != null || document.hidden) {
+    return;
+  }
+  mainRafId = requestAnimationFrame(tick);
+}
+
 function tick() {
+  mainRafId = null;
+  if (document.hidden) {
+    return;
+  }
   if (shouldRunGraphFrame()) {
     runGraphFrame();
   }
   updateHeadWidgetFrame();
-  requestAnimationFrame(tick);
+  scheduleMainFrame();
 }
 
 function runGraphFrame() {
