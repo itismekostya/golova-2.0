@@ -65,6 +65,7 @@ function createRoundedImageMaterial(ThreeLib, texture) {
 
 export function createGraphWebglMediaRenderer({
   stage,
+  onTextureLoad = null,
   textureCacheLimit = DEFAULT_TEXTURE_CACHE_LIMIT,
   pixelRatioCap = DEFAULT_PIXEL_RATIO_CAP
 } = {}) {
@@ -147,6 +148,9 @@ export function createGraphWebglMediaRenderer({
       src,
       () => {
         texture.needsUpdate = true;
+        if (typeof onTextureLoad === "function") {
+          onTextureLoad();
+        }
       },
       undefined,
       () => {
@@ -192,10 +196,10 @@ export function createGraphWebglMediaRenderer({
     camera.bottom = -viewY - halfH;
     camera.updateProjectionMatrix();
     return {
-      minX: camera.left - VIEW_PADDING_WORLD,
-      maxX: camera.right + VIEW_PADDING_WORLD,
-      minY: camera.top - VIEW_PADDING_WORLD,
-      maxY: camera.bottom + VIEW_PADDING_WORLD
+      minX: viewX - halfW - VIEW_PADDING_WORLD,
+      maxX: viewX + halfW + VIEW_PADDING_WORLD,
+      minY: viewY - halfH - VIEW_PADDING_WORLD,
+      maxY: viewY + halfH + VIEW_PADDING_WORLD
     };
   }
 

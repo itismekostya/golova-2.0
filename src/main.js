@@ -473,7 +473,10 @@ function initGraphWebglMediaRenderer() {
   if (!USE_WEBGL_GRAPH_MEDIA) {
     return;
   }
-  graphWebglMediaRenderer = createGraphWebglMediaRenderer({ stage });
+  graphWebglMediaRenderer = createGraphWebglMediaRenderer({
+    stage,
+    onTextureLoad: () => wakeGraph(3)
+  });
   if (!graphWebglMediaRenderer) {
     console.warn("[graph-webgl] renderer unavailable; falling back to DOM media");
     return;
