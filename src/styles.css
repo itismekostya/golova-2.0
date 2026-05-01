@@ -1219,6 +1219,8 @@ body:not(.is-deep-mode) .project-node[data-node-type="project"] .project-title {
   pointer-events: auto;
   -webkit-user-drag: none;
   cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: var(--mw, 180px) var(--mh, 180px);
 }
 
 .project-media-note {
@@ -1395,6 +1397,11 @@ body.is-deep-mode .project-node.is-deep-root.is-deep-root-media-hidden .project-
 @media (max-width: 1024px) {
   .head-tuning-panel {
     display: none;
+  }
+
+  .project-media {
+    content-visibility: visible;
+    contain-intrinsic-size: auto;
   }
 
   body.is-deep-mode .project-node.is-deep-root .project-media-note,
