@@ -2,6 +2,7 @@ import { projects } from "./projects.js";
 import { mediaManifestByName } from "./media-manifest.js";
 import { mediaPreviewManifestBySrc } from "./media-preview-manifest.js";
 import { mediaProxyManifestBySrc } from "./media-proxy-manifest.js";
+import { createGraphWebglMediaRenderer } from "./graph-webgl-renderer.js";
 
 const stage = document.getElementById("stage");
 const world = document.getElementById("world");
@@ -14,6 +15,8 @@ const headCanvasHostEl = document.getElementById("headCanvasHost");
 const headBackdropEl = document.getElementById("headBackdrop");
 const PROJECT_GRAPH_QUERY_KEY = "project";
 const PROJECT_GRAPH_HASH_PREFIX = "#project/";
+const urlParams = new URLSearchParams(window.location.search);
+const USE_WEBGL_GRAPH_MEDIA = urlParams.get("renderer") === "webgl";
 
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 1.6;
@@ -401,6 +404,7 @@ const worldCssVarCache = new Map();
 let graphDirtyFrames = GRAPH_INITIAL_DIRTY_FRAMES;
 let lastGraphLayoutZoom = Number.NaN;
 let mainRafId = null;
+let graphWebglMediaRenderer = null;
 
 function clearFocusedMediaTarget() {
   state.focusedMediaIndex = -1;
@@ -429,6 +433,7 @@ function bootstrap() {
   refreshFilterTypesFromModels();
   settleInitialLayout();
   buildNodes();
+  initGraphWebglMediaRenderer();
   buildFilters();
   refreshMediaLayoutsFromDOM();
   refreshModelGeometriesFromDOM();
@@ -462,6 +467,18 @@ function clearInitialProjectRouteLoadingState() {
     return;
   }
   document.body.classList.remove("is-project-route-loading");
+}
+
+function initGraphWebglMediaRenderer() {
+  if (!USE_WEBGL_GRAPH_MEDIA) {
+    return;
+  }
+  graphWebglMediaRenderer = createGraphWebglMediaRenderer({ stage });
+  if (!graphWebglMediaRenderer) {
+    console.warn("[graph-webgl] renderer unavailable; falling back to DOM media");
+    return;
+  }
+  document.body.classList.add("is-webgl-graph-media");
 }
 
 function buildProjectGraphQueryValue(slug) {
@@ -1744,6 +1761,9 @@ function tryAutoplayProjectMediaVideo(videoElement) {
 }
 
 function hydrateDeferredProjectMediaElement(slug, mediaIndex, mediaElement) {
+  if (USE_WEBGL_GRAPH_MEDIA) {
+    return false;
+  }
   if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
     return false;
   }
@@ -2086,6 +2106,9 @@ function getVideoPlaybackObserver() {
 }
 
 function observeMediaForLazyHydration(mediaElement) {
+  if (USE_WEBGL_GRAPH_MEDIA) {
+    return false;
+  }
   if (!mediaElement || mediaElement.dataset.mediaHydrated === "true") {
     return false;
   }
@@ -2707,6 +2730,9 @@ function setMediaElementToMobileSource(mediaElement, { trackPromotion = false } 
 }
 
 function setMediaElementToFullSource(mediaElement, { trackPromotion = false } = {}) {
+  if (USE_WEBGL_GRAPH_MEDIA) {
+    return false;
+  }
   if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
     return false;
   }
@@ -2770,6 +2796,9 @@ function clearPromotedDeepMediaElement() {
 }
 
 function demoteConnectedDeepMediaToLightweight({ except = null } = {}) {
+  if (USE_WEBGL_GRAPH_MEDIA) {
+    return false;
+  }
   if (!state.deepProjectSlug) {
     return false;
   }
@@ -2803,6 +2832,9 @@ function promoteMediaElementToFullSource(mediaElement) {
 }
 
 function setNodeMediaProxyMode(slug, useProxy) {
+  if (USE_WEBGL_GRAPH_MEDIA) {
+    return false;
+  }
   if (!slug) {
     return false;
   }
@@ -6947,6 +6979,125 @@ function getMediaScaleAtZoom(zoom) {
   return baseScale * lerp(1, 0.88, closeOnlyT);
 }
 
+function getGraphWebglMediaRenderSrc(media, model, mediaIndex) {
+  const src = typeof media?.src === "string" ? media.src.trim() : "";
+  if (!src) {
+    return "";
+  }
+  const thumbSrc = getMediaThumbSrcByMediaSrc(src);
+  const previewSrc = getMediaPreviewSrcByMediaSrc(src);
+  const mobileSrc = getMobileMediaSrcByMediaSrc(src);
+  if (isMotionMediaSrc(src)) {
+    return thumbSrc || previewSrc || mobileSrc || "";
+  }
+
+  const focusedMediaIndex = Number.isFinite(Number(state.focusedMediaIndex))
+    ? Math.max(0, Math.round(Number(state.focusedMediaIndex)))
+    : -1;
+  const isFocusedMedia = state.focusedSlug === model.slug && focusedMediaIndex === mediaIndex;
+  if (isFocusedMedia) {
+    return shouldUseMobileBoundedFullMedia() ? mobileSrc || src : src;
+  }
+  if (isMobileMediaMode()) {
+    return thumbSrc || previewSrc || mobileSrc || src;
+  }
+  if (model.nodeType === "content") {
+    return previewSrc || thumbSrc || src;
+  }
+  return previewSrc || thumbSrc || src;
+}
+
+function collectGraphWebglMediaItems(mediaScale, mediaLayoutT) {
+  if (!USE_WEBGL_GRAPH_MEDIA) {
+    return [];
+  }
+  const items = [];
+  let order = 0;
+  const skipProjectMediaForNaming =
+    state.activeType === "naming" && !state.deepProjectSlug;
+
+  for (const model of modelBySlug.values()) {
+    if (!model.visible) {
+      continue;
+    }
+    const project = getDisplayProject(model);
+    if (!project || !Array.isArray(project.media) || !project.media.length) {
+      continue;
+    }
+    if (
+      skipProjectMediaForNaming &&
+      model.nodeType !== "content" &&
+      Array.isArray(project.types) &&
+      project.types.includes("naming")
+    ) {
+      continue;
+    }
+
+    const mediaFarList = mediaLayoutBySlug.get(model.slug) || project.media || [];
+    const mediaCloseList = mediaLayoutCloseBySlug.get(model.slug) || mediaFarList;
+    if (!Array.isArray(mediaFarList) || !mediaFarList.length) {
+      continue;
+    }
+
+    const origin = getMediaLayoutOrigin(mediaFarList);
+    const safeScale = Math.max(0.0001, Number(mediaScale) || 1);
+    const baseX = (Number.isFinite(model.x) ? model.x : model.ax || 0) - (Number(model.centerX) || 0);
+    const baseY = (Number.isFinite(model.y) ? model.y : model.ay || 0) - (Number(model.centerY) || 0);
+
+    for (const [mediaIndex, mediaFar] of mediaFarList.entries()) {
+      const rawSrc = typeof mediaFar?.src === "string" ? mediaFar.src.trim() : "";
+      if (!rawSrc || shouldHideMotionMediaOnMobile(rawSrc)) {
+        continue;
+      }
+      const mediaClose = mediaCloseList[mediaIndex] || mediaFar;
+      const src = getGraphWebglMediaRenderSrc(mediaFar, model, mediaIndex);
+      if (!src) {
+        continue;
+      }
+      const x = lerp(Number(mediaFar.x) || 0, Number(mediaClose.x) || 0, mediaLayoutT);
+      const y = lerp(Number(mediaFar.y) || 0, Number(mediaClose.y) || 0, mediaLayoutT);
+      const width = Math.max(1, Number(mediaFar.w) || Number(mediaClose.w) || 180) * safeScale;
+      const height = Math.max(1, Number(mediaFar.h) || Number(mediaClose.h) || 180) * safeScale;
+      const scaledX = origin.x + (x - origin.x) * safeScale;
+      const scaledY = origin.y + (y - origin.y) * safeScale;
+      const rotation = parseRotationRadians(mediaFar.r || mediaClose.r || "0deg");
+      items.push({
+        key: `${model.slug}:${mediaIndex}:${src}`,
+        slug: model.slug,
+        mediaIndex,
+        src,
+        x: baseX + scaledX + width * 0.5,
+        y: baseY + scaledY + height * 0.5,
+        width,
+        height,
+        rotation,
+        rounded: shouldRoundProjectMedia(rawSrc),
+        radiusPx: 15,
+        order: order++
+      });
+    }
+  }
+  return items;
+}
+
+function parseRotationRadians(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return 0;
+  }
+  const raw = value.trim();
+  if (!raw) {
+    return 0;
+  }
+  const numeric = Number.parseFloat(raw);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return raw.endsWith("rad") ? numeric : (numeric * Math.PI) / 180;
+}
+
 function getMediaLayoutTAtZoom(zoom) {
   const detailsLayoutStartZoom = clamp(
     state.homeZoom || LOD_FAR,
@@ -8027,7 +8178,7 @@ function createProjectNode(project) {
       const mobileMediaSrc = getMobileMediaSrcByMediaSrc(mediaFar.src);
       const usesPreview = Boolean(previewSrc && previewSrc !== mediaFar.src);
       const motionPosterSrc = previewSrc || videoPosterSrc;
-      const renderVideoAsPoster = isMotion && shouldDisableVideoPlayback() && Boolean(motionPosterSrc);
+      const renderVideoAsPoster = (USE_WEBGL_GRAPH_MEDIA && isMotion) || (isMotion && shouldDisableVideoPlayback() && Boolean(motionPosterSrc));
       const lightweightMediaSrc = usesPreview ? previewSrc : graphMediaSrc;
       const mediaFrame = document.createElement("div");
       mediaFrame.className = "project-media-frame";
@@ -8104,7 +8255,10 @@ function createProjectNode(project) {
       mediaElement.dataset.mobileSrc = mobileMediaSrc && mobileMediaSrc !== mediaFar.src ? mobileMediaSrc : "";
       mediaElement.dataset.mobileActive = "false";
       mediaElement.dataset.videoPosterOnly = "false";
-      if (isContentNode) {
+      if (USE_WEBGL_GRAPH_MEDIA) {
+        mediaElement.dataset.deferredSrc = "";
+        mediaElement.dataset.mediaHydrated = "true";
+      } else if (isContentNode) {
         mediaElement.dataset.deferredSrc = renderVideoAsPoster ? motionPosterSrc || mediaFar.src : lightweightMediaSrc;
         mediaElement.dataset.mediaHydrated = "false";
         if (isVideo && !renderVideoAsPoster) {
@@ -11310,8 +11464,23 @@ function runGraphFrame() {
     lastGraphLayoutZoom = state.viewZoom;
   }
 
+  updateGraphWebglMediaLayer(mediaScale, mediaLayoutT);
   updateLODClass(state.viewZoom);
   refreshDetailsPointerInteractivity(detailsVisibility);
+}
+
+function updateGraphWebglMediaLayer(mediaScale, mediaLayoutT) {
+  if (!graphWebglMediaRenderer) {
+    return;
+  }
+  graphWebglMediaRenderer.update({
+    width: state.stageWidth || stage.clientWidth || window.innerWidth || 1,
+    height: state.stageHeight || stage.clientHeight || window.innerHeight || 1,
+    viewX: state.viewX,
+    viewY: state.viewY,
+    viewZoom: state.viewZoom,
+    items: collectGraphWebglMediaItems(mediaScale, mediaLayoutT)
+  });
 }
 
 function runGraphSimulation() {
