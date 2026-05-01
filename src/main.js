@@ -150,6 +150,7 @@ const MEDIA_EVICTION_ROOT_MARGIN_PX = 1500;
 const MOBILE_MEDIA_EVICTION_ROOT_MARGIN_PX = 520;
 const DISABLE_ALL_VIDEO_MEDIA = false;
 const DISABLE_MOBILE_VIDEO_MEDIA = true;
+const HIDE_MOBILE_MOTION_MEDIA = true;
 const USE_CONTENT_MEDIA_PREVIEWS = true;
 const USE_GRAPH_MEDIA_PROXIES = false;
 const HEAD_MODEL_SRC = "./assets/head/golova_model.glb";
@@ -1023,6 +1024,10 @@ function buildContentSubgraphForSource({
     }
     const sourceMediaIndex = inferSourceMediaIndexFromItem(item, parentMedia, 0);
     const sourceMedia = parentMedia[sourceMediaIndex] || parentMedia[0] || null;
+    const itemMediaSrc = getContentItemSource(item) || sourceMedia?.src || "";
+    if (shouldHideMotionMediaOnMobile(itemMediaSrc)) {
+      continue;
+    }
     const contentProjectBase = createContentItemProject(sourceProject, sourceSlug, item, sourceMedia, index);
     if (!contentProjectBase) {
       continue;
@@ -1541,6 +1546,10 @@ function isMobileViewport() {
 
 function shouldDisableVideoPlayback() {
   return DISABLE_ALL_VIDEO_MEDIA || (DISABLE_MOBILE_VIDEO_MEDIA && isMobileViewport());
+}
+
+function shouldHideMotionMediaOnMobile(src) {
+  return HIDE_MOBILE_MOTION_MEDIA && isMobileViewport() && isMotionMediaSrc(src);
 }
 
 function getVideoPosterSrcByMediaSrc(src) {
@@ -7457,6 +7466,9 @@ function createProjectNode(project) {
   const mediaCloseList = mediaLayoutCloseBySlug.get(project.slug) || mediaFarList;
   if (Array.isArray(mediaFarList)) {
     for (const [index, mediaFar] of mediaFarList.entries()) {
+      if (shouldHideMotionMediaOnMobile(mediaFar.src)) {
+        continue;
+      }
       const mediaClose = mediaCloseList[index] || mediaFar;
       const isVideo = isVideoMediaSrc(mediaFar.src);
       const isMotion = isVideo || isGifMediaSrc(mediaFar.src);
