@@ -9838,10 +9838,6 @@ function bindEvents() {
   };
 
   window.addEventListener("resize", handleViewportResize);
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener("resize", handleViewportResize);
-    window.visualViewport.addEventListener("scroll", handleViewportResize);
-  }
 }
 
 function isExternalUrl(url) {
