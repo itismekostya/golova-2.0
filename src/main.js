@@ -396,6 +396,7 @@ let promotedDeepMediaElement = null;
 let mediaHydrationQueue = [];
 const queuedMediaHydrationElements = new Set();
 let mediaHydrationRafId = null;
+let runtimeImageObjectUrlSerial = 0;
 const worldCssVarCache = new Map();
 let graphDirtyFrames = GRAPH_INITIAL_DIRTY_FRAMES;
 let lastGraphLayoutZoom = Number.NaN;
@@ -829,6 +830,7 @@ function releaseContentNodeMedia(node) {
     }
 
     if (mediaElement instanceof HTMLImageElement) {
+      invalidateMediaElementRuntimeImageObjectUrl(mediaElement);
       mediaElement.removeAttribute("loading");
       mediaElement.removeAttribute("src");
       mediaElement.src = "";
@@ -1797,7 +1799,10 @@ function hydrateDeferredProjectMediaElement(slug, mediaIndex, mediaElement) {
       tryAutoplayProjectMediaVideo(mediaElement);
     }
   } else {
-    mediaElement.src = mediaElement.dataset.proxyActive === "true" ? getResolvedMediaElementProxySrc(mediaElement) || deferredSrc : deferredSrc;
+    setImageElementToDirectSource(
+      mediaElement,
+      mediaElement.dataset.proxyActive === "true" ? getResolvedMediaElementProxySrc(mediaElement) || deferredSrc : deferredSrc
+    );
     if (mediaElement.complete && mediaElement.naturalWidth > 0 && mediaElement.naturalHeight > 0) {
       handleProjectMediaElementLoad(slug, mediaIndex, mediaElement);
     }
@@ -2035,6 +2040,7 @@ function evictHydratedMediaElement(mediaElement) {
       videoPlaybackObserver.unobserve(mediaElement);
     }
   } else if (mediaElement instanceof HTMLImageElement) {
+    invalidateMediaElementRuntimeImageObjectUrl(mediaElement);
     mediaElement.removeAttribute("src");
     mediaElement.src = "";
   }
@@ -2378,6 +2384,120 @@ function clearCleanedBlackMatteProxyCache() {
   pendingBlackMatteProxyJobsBySrc.clear();
 }
 
+function revokeMediaElementRuntimeImageObjectUrl(mediaElement) {
+  if (!(mediaElement instanceof HTMLImageElement)) {
+    return;
+  }
+  const objectUrl =
+    typeof mediaElement.dataset.runtimeObjectUrl === "string" ? mediaElement.dataset.runtimeObjectUrl.trim() : "";
+  if (objectUrl) {
+    revokeObjectUrl(objectUrl);
+  }
+  delete mediaElement.dataset.runtimeObjectUrl;
+  delete mediaElement.dataset.runtimeObjectUrlSource;
+}
+
+function invalidateMediaElementRuntimeImageObjectUrl(mediaElement) {
+  if (!(mediaElement instanceof HTMLImageElement)) {
+    return;
+  }
+  mediaElement.dataset.runtimeObjectUrlToken = "";
+  revokeMediaElementRuntimeImageObjectUrl(mediaElement);
+}
+
+function clearRuntimeImageObjectUrls() {
+  for (const mediaElement of world.querySelectorAll(".project-media")) {
+    invalidateMediaElementRuntimeImageObjectUrl(mediaElement);
+  }
+}
+
+function canUseRevocableRuntimeImageSource() {
+  return (
+    isMobileMediaMode() &&
+    typeof window !== "undefined" &&
+    typeof window.fetch === "function" &&
+    typeof URL !== "undefined" &&
+    typeof URL.createObjectURL === "function" &&
+    typeof URL.revokeObjectURL === "function"
+  );
+}
+
+function setImageElementToDirectSource(mediaElement, src) {
+  if (!(mediaElement instanceof HTMLImageElement) || !src) {
+    return false;
+  }
+  invalidateMediaElementRuntimeImageObjectUrl(mediaElement);
+  if (getMediaSrcKey(src) === getMediaSrcKey(mediaElement.currentSrc || mediaElement.src || "")) {
+    return false;
+  }
+  mediaElement.removeAttribute("src");
+  mediaElement.src = "";
+  mediaElement.src = src;
+  return true;
+}
+
+function setImageElementToRevocableRuntimeSource(mediaElement, src) {
+  if (!(mediaElement instanceof HTMLImageElement) || !src) {
+    return false;
+  }
+  if (!canUseRevocableRuntimeImageSource()) {
+    return setImageElementToDirectSource(mediaElement, src);
+  }
+
+  const currentObjectUrl =
+    typeof mediaElement.dataset.runtimeObjectUrl === "string" ? mediaElement.dataset.runtimeObjectUrl.trim() : "";
+  const currentObjectUrlSource =
+    typeof mediaElement.dataset.runtimeObjectUrlSource === "string" ? mediaElement.dataset.runtimeObjectUrlSource.trim() : "";
+  if (currentObjectUrl && currentObjectUrlSource === src && (mediaElement.currentSrc || mediaElement.src || "") === currentObjectUrl) {
+    return false;
+  }
+
+  const token = String(++runtimeImageObjectUrlSerial);
+  mediaElement.dataset.runtimeObjectUrlToken = token;
+
+  window
+    .fetch(src, { cache: "force-cache" })
+    .then((response) => {
+      if (!response || !response.ok) {
+        throw new Error("image fetch failed");
+      }
+      return response.blob();
+    })
+    .then((blob) => {
+      const objectUrl = URL.createObjectURL(blob);
+      const stillCurrent =
+        mediaElement.isConnected &&
+        mediaElement.dataset.runtimeObjectUrlToken === token &&
+        mediaElement.dataset.mobileActive === "true";
+      if (!stillCurrent) {
+        revokeObjectUrl(objectUrl);
+        return;
+      }
+
+      const previousObjectUrl =
+        typeof mediaElement.dataset.runtimeObjectUrl === "string" ? mediaElement.dataset.runtimeObjectUrl.trim() : "";
+      mediaElement.dataset.runtimeObjectUrl = objectUrl;
+      mediaElement.dataset.runtimeObjectUrlSource = src;
+      mediaElement.removeAttribute("src");
+      mediaElement.src = "";
+      mediaElement.src = objectUrl;
+      if (previousObjectUrl && previousObjectUrl !== objectUrl) {
+        revokeObjectUrl(previousObjectUrl);
+      }
+    })
+    .catch(() => {
+      const stillCurrent =
+        mediaElement.isConnected &&
+        mediaElement.dataset.runtimeObjectUrlToken === token &&
+        mediaElement.dataset.mobileActive === "true";
+      if (stillCurrent) {
+        setImageElementToDirectSource(mediaElement, src);
+      }
+    });
+
+  return true;
+}
+
 function queueBlackMatteProxyCleanup(mediaElement) {
   if (!(mediaElement instanceof HTMLImageElement)) {
     return;
@@ -2498,6 +2618,9 @@ function demoteMediaElementToProxy(mediaElement) {
   mediaElement.dataset.previewActive = "false";
   mediaElement.dataset.mobileActive = "false";
   mediaElement.dataset.videoPosterOnly = "false";
+  if (mediaElement instanceof HTMLImageElement) {
+    invalidateMediaElementRuntimeImageObjectUrl(mediaElement);
+  }
   mediaElement.src = getResolvedMediaElementProxySrc(mediaElement) || proxySrc;
   if (mediaElement instanceof HTMLVideoElement) {
     mediaElement.preload = "auto";
@@ -2526,10 +2649,7 @@ function demoteMediaElementToPreview(mediaElement) {
   }
 
   mediaElement.dataset.videoPosterOnly = "false";
-  mediaElement.removeAttribute("src");
-  mediaElement.src = "";
-  mediaElement.src = previewSrc;
-  return true;
+  return setImageElementToDirectSource(mediaElement, previewSrc);
 }
 
 function demoteMediaElementToLightweightSource(mediaElement) {
@@ -2559,7 +2679,12 @@ function setMediaElementToMobileSource(mediaElement, { trackPromotion = false } 
     }
     return true;
   }
-  if (getMediaSrcKey(mobileSrc) === getMediaSrcKey(mediaElement.currentSrc || mediaElement.src || "")) {
+  if (
+    getMediaSrcKey(mobileSrc) === getMediaSrcKey(mediaElement.currentSrc || mediaElement.src || "") ||
+    (mediaElement.dataset.runtimeObjectUrlSource === mobileSrc &&
+      mediaElement.dataset.runtimeObjectUrl &&
+      (mediaElement.currentSrc || mediaElement.src || "") === mediaElement.dataset.runtimeObjectUrl)
+  ) {
     mediaElement.dataset.proxyActive = "false";
     mediaElement.dataset.previewActive = "false";
     mediaElement.dataset.mobileActive = "true";
@@ -2574,9 +2699,7 @@ function setMediaElementToMobileSource(mediaElement, { trackPromotion = false } 
   mediaElement.dataset.previewActive = "false";
   mediaElement.dataset.mobileActive = "true";
   mediaElement.dataset.videoPosterOnly = "false";
-  mediaElement.removeAttribute("src");
-  mediaElement.src = "";
-  mediaElement.src = mobileSrc;
+  setImageElementToRevocableRuntimeSource(mediaElement, mobileSrc);
   if (trackPromotion) {
     promotedDeepMediaElement = mediaElement;
   }
@@ -2607,6 +2730,9 @@ function setMediaElementToFullSource(mediaElement, { trackPromotion = false } = 
     mediaElement.dataset.previewActive = "false";
     mediaElement.dataset.mobileActive = "false";
     mediaElement.dataset.videoPosterOnly = "false";
+    if (mediaElement instanceof HTMLImageElement) {
+      invalidateMediaElementRuntimeImageObjectUrl(mediaElement);
+    }
     if (trackPromotion) {
       promotedDeepMediaElement = mediaElement;
     }
@@ -2617,15 +2743,17 @@ function setMediaElementToFullSource(mediaElement, { trackPromotion = false } = 
   mediaElement.dataset.previewActive = "false";
   mediaElement.dataset.mobileActive = "false";
   mediaElement.dataset.videoPosterOnly = "false";
-  mediaElement.removeAttribute("src");
-  mediaElement.src = "";
-  mediaElement.src = fullSrc;
   if (mediaElement instanceof HTMLVideoElement) {
+    mediaElement.removeAttribute("src");
+    mediaElement.src = "";
+    mediaElement.src = fullSrc;
     mediaElement.preload = "metadata";
     if (typeof mediaElement.load === "function") {
       mediaElement.load();
     }
     tryAutoplayProjectMediaVideo(mediaElement);
+  } else if (mediaElement instanceof HTMLImageElement) {
+    setImageElementToDirectSource(mediaElement, fullSrc);
   }
   if (trackPromotion) {
     promotedDeepMediaElement = mediaElement;
@@ -9933,6 +10061,7 @@ function bindEvents() {
     if (document.hidden) {
       clearPromotedDeepMediaElement();
       demoteConnectedDeepMediaToLightweight();
+      clearRuntimeImageObjectUrls();
       clearCleanedBlackMatteProxyCache();
       runtimeMediaSizeByKey.clear();
       worldCssVarCache.clear();
@@ -9944,6 +10073,7 @@ function bindEvents() {
   window.addEventListener("pagehide", () => {
     clearPromotedDeepMediaElement();
     demoteConnectedDeepMediaToLightweight();
+    clearRuntimeImageObjectUrls();
     clearCleanedBlackMatteProxyCache();
     runtimeMediaSizeByKey.clear();
     worldCssVarCache.clear();
