@@ -187,8 +187,9 @@ export function createGraphWebglMediaRenderer({
     const halfH = Math.max(1, Number(height) || renderHeight || 1) / (2 * safeZoom);
     camera.left = viewX - halfW;
     camera.right = viewX + halfW;
-    camera.top = viewY - halfH;
-    camera.bottom = viewY + halfH;
+    // CSS graph coordinates grow downward on Y; Three.js camera coordinates grow upward.
+    camera.top = -viewY + halfH;
+    camera.bottom = -viewY - halfH;
     camera.updateProjectionMatrix();
     return {
       minX: camera.left - VIEW_PADDING_WORLD,
@@ -211,7 +212,7 @@ export function createGraphWebglMediaRenderer({
   function updateMesh(mesh, item, texture, viewZoom) {
     const width = Math.max(1, Number(item.width) || 1);
     const height = Math.max(1, Number(item.height) || 1);
-    mesh.position.set(Number(item.x) || 0, Number(item.y) || 0, 0);
+    mesh.position.set(Number(item.x) || 0, -(Number(item.y) || 0), 0);
     mesh.scale.set(width, height, 1);
     mesh.rotation.z = Number(item.rotation) || 0;
     mesh.renderOrder = Number.isFinite(item.order) ? item.order : mesh.renderOrder;
