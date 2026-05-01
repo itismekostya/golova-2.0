@@ -4,7 +4,6 @@ import { mediaPreviewManifestBySrc } from "./media-preview-manifest.js";
 import { mediaProxyManifestBySrc } from "./media-proxy-manifest.js";
 
 const stage = document.getElementById("stage");
-const mediaCanvas = document.getElementById("mediaCanvas");
 const world = document.getElementById("world");
 const filtersEl = document.getElementById("filters");
 const collisionToggleBtn = document.getElementById("collisionToggle");
@@ -165,12 +164,6 @@ const CLEANED_BLACK_MATTE_PROXY_CACHE_LIMIT = 30;
 const USE_CONTENT_MEDIA_PREVIEWS = true;
 const USE_MOBILE_BOUNDED_FULL_MEDIA = true;
 const USE_GRAPH_MEDIA_PROXIES = false;
-const USE_MOBILE_CANVAS_MEDIA_RENDERER = true;
-const CANVAS_MEDIA_MAX_PIXEL_RATIO = 1.5;
-const CANVAS_MEDIA_CACHE_LIMIT = 64;
-const CANVAS_MEDIA_HIGH_RES_CACHE_LIMIT = 8;
-const CANVAS_MEDIA_VIEWPORT_MARGIN_PX = 560;
-const CANVAS_MEDIA_CORNER_RADIUS_PX = 15;
 const HEAD_INTERACTIVE_ROTATION_ENABLED = false;
 const DESKTOP_HEAD_MAX_PIXEL_RATIO = 2;
 const HEAD_MODEL_SRC = "./assets/head/golova_model.glb";
@@ -404,13 +397,6 @@ let mediaHydrationQueue = [];
 const queuedMediaHydrationElements = new Set();
 let mediaHydrationRafId = null;
 let runtimeImageObjectUrlSerial = 0;
-let mediaCanvasCtx = null;
-let mediaCanvasCssWidth = 0;
-let mediaCanvasCssHeight = 0;
-let mediaCanvasPixelRatio = 0;
-let canvasMediaImageSerial = 0;
-let canvasMediaRendererWasActive = false;
-const canvasMediaImageCache = new Map();
 const worldCssVarCache = new Map();
 let graphDirtyFrames = GRAPH_INITIAL_DIRTY_FRAMES;
 let lastGraphLayoutZoom = Number.NaN;
@@ -1635,37 +1621,6 @@ function shouldUseMobileBoundedFullMedia() {
   return USE_MOBILE_BOUNDED_FULL_MEDIA && isMobileMediaMode();
 }
 
-function shouldUseCanvasMediaRenderer() {
-  return Boolean(USE_MOBILE_CANVAS_MEDIA_RENDERER && mediaCanvas instanceof HTMLCanvasElement && isMobileMediaMode());
-}
-
-function shouldCanvasRenderMediaSrc(src) {
-  return shouldUseCanvasMediaRenderer() && !isMotionMediaSrc(src);
-}
-
-function isCanvasRenderedMediaElement(mediaElement) {
-  return (
-    mediaElement instanceof HTMLImageElement &&
-    mediaElement.dataset.canvasMedia === "true" &&
-    shouldUseCanvasMediaRenderer()
-  );
-}
-
-function clearCanvasRenderedDomMediaSource(mediaElement) {
-  if (!(mediaElement instanceof HTMLImageElement)) {
-    return false;
-  }
-  invalidateMediaElementRuntimeImageObjectUrl(mediaElement);
-  mediaElement.dataset.proxyActive = "false";
-  mediaElement.dataset.previewActive = "false";
-  mediaElement.dataset.mobileActive = "false";
-  mediaElement.dataset.videoPosterOnly = "false";
-  mediaElement.removeAttribute("loading");
-  mediaElement.removeAttribute("src");
-  mediaElement.src = "";
-  return true;
-}
-
 function getVideoPosterSrcByMediaSrc(src) {
   const proxy = getGraphMediaProxyBySrc(src);
   return typeof proxy?.posterSrc === "string" && proxy.posterSrc.trim() ? proxy.posterSrc.trim() : "";
@@ -1791,13 +1746,6 @@ function tryAutoplayProjectMediaVideo(videoElement) {
 function hydrateDeferredProjectMediaElement(slug, mediaIndex, mediaElement) {
   if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
     return false;
-  }
-  if (isCanvasRenderedMediaElement(mediaElement)) {
-    mediaElement.dataset.mediaHydrated = "true";
-    mediaElement.dataset.deferredSrc = "";
-    clearCanvasRenderedDomMediaSource(mediaElement);
-    wakeGraph(2);
-    return true;
   }
   const deferredSrc = typeof mediaElement.dataset.deferredSrc === "string" ? mediaElement.dataset.deferredSrc.trim() : "";
   if (!deferredSrc || mediaElement.dataset.mediaHydrated === "true") {
@@ -2139,13 +2087,6 @@ function getVideoPlaybackObserver() {
 
 function observeMediaForLazyHydration(mediaElement) {
   if (!mediaElement || mediaElement.dataset.mediaHydrated === "true") {
-    return false;
-  }
-  if (isCanvasRenderedMediaElement(mediaElement)) {
-    mediaElement.dataset.mediaHydrated = "true";
-    mediaElement.dataset.deferredSrc = "";
-    clearCanvasRenderedDomMediaSource(mediaElement);
-    wakeGraph(2);
     return false;
   }
   const observer = getLazyMediaHydrationObserver();
@@ -2664,9 +2605,6 @@ function demoteMediaElementToProxy(mediaElement) {
   if (!mediaElement) {
     return false;
   }
-  if (isCanvasRenderedMediaElement(mediaElement)) {
-    return clearCanvasRenderedDomMediaSource(mediaElement);
-  }
   const proxySrc = getMediaElementProxySrc(mediaElement);
   if (!proxySrc || mediaElementUsesProxySource(mediaElement)) {
     return false;
@@ -2698,9 +2636,6 @@ function demoteMediaElementToPreview(mediaElement) {
   if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
     return false;
   }
-  if (isCanvasRenderedMediaElement(mediaElement)) {
-    return clearCanvasRenderedDomMediaSource(mediaElement);
-  }
   const previewSrc = getMediaElementLightweightSrc(mediaElement);
   if (!previewSrc || mediaElementUsesPreviewSource(mediaElement)) {
     return false;
@@ -2727,14 +2662,6 @@ function demoteMediaElementToLightweightSource(mediaElement) {
 function setMediaElementToMobileSource(mediaElement, { trackPromotion = false } = {}) {
   if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
     return false;
-  }
-  if (isCanvasRenderedMediaElement(mediaElement)) {
-    clearCanvasRenderedDomMediaSource(mediaElement);
-    if (trackPromotion) {
-      promotedDeepMediaElement = mediaElement;
-    }
-    wakeGraph(4);
-    return true;
   }
   const mobileSrc = getMediaElementMobileSrc(mediaElement);
   if (!mobileSrc) {
@@ -2782,14 +2709,6 @@ function setMediaElementToMobileSource(mediaElement, { trackPromotion = false } 
 function setMediaElementToFullSource(mediaElement, { trackPromotion = false } = {}) {
   if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
     return false;
-  }
-  if (isCanvasRenderedMediaElement(mediaElement)) {
-    clearCanvasRenderedDomMediaSource(mediaElement);
-    if (trackPromotion) {
-      promotedDeepMediaElement = mediaElement;
-    }
-    wakeGraph(4);
-    return true;
   }
   const fullSrc = getMediaElementFullSrc(mediaElement);
   const proxySrc = getMediaElementProxySrc(mediaElement);
@@ -8110,7 +8029,6 @@ function createProjectNode(project) {
       const motionPosterSrc = previewSrc || videoPosterSrc;
       const renderVideoAsPoster = isMotion && shouldDisableVideoPlayback() && Boolean(motionPosterSrc);
       const lightweightMediaSrc = usesPreview ? previewSrc : graphMediaSrc;
-      const renderMediaOnCanvas = shouldCanvasRenderMediaSrc(mediaFar.src);
       const mediaFrame = document.createElement("div");
       mediaFrame.className = "project-media-frame";
       if (shouldRoundMedia) {
@@ -8185,23 +8103,15 @@ function createProjectNode(project) {
       mediaElement.dataset.previewActive = usesPreview ? "true" : "false";
       mediaElement.dataset.mobileSrc = mobileMediaSrc && mobileMediaSrc !== mediaFar.src ? mobileMediaSrc : "";
       mediaElement.dataset.mobileActive = "false";
-      mediaElement.dataset.canvasMedia = renderMediaOnCanvas ? "true" : "false";
       mediaElement.dataset.videoPosterOnly = "false";
       if (isContentNode) {
         mediaElement.dataset.deferredSrc = renderVideoAsPoster ? motionPosterSrc || mediaFar.src : lightweightMediaSrc;
-        mediaElement.dataset.mediaHydrated = renderMediaOnCanvas ? "true" : "false";
+        mediaElement.dataset.mediaHydrated = "false";
         if (isVideo && !renderVideoAsPoster) {
           mediaElement.preload = "none";
         }
-        if (renderMediaOnCanvas && mediaElement instanceof HTMLImageElement) {
-          clearCanvasRenderedDomMediaSource(mediaElement);
-        }
       } else {
-        if (renderMediaOnCanvas && mediaElement instanceof HTMLImageElement) {
-          clearCanvasRenderedDomMediaSource(mediaElement);
-        } else {
-          mediaElement.src = renderVideoAsPoster ? motionPosterSrc || mediaFar.src : usesPreview ? previewSrc : mediaFar.src;
-        }
+        mediaElement.src = renderVideoAsPoster ? motionPosterSrc || mediaFar.src : usesPreview ? previewSrc : mediaFar.src;
         mediaElement.dataset.mediaHydrated = "true";
         if (isVideo && !renderVideoAsPoster) {
           if (mediaElement.readyState >= 1 && mediaElement.videoWidth > 0 && mediaElement.videoHeight > 0) {
@@ -10153,8 +10063,6 @@ function bindEvents() {
       demoteConnectedDeepMediaToLightweight();
       clearRuntimeImageObjectUrls();
       clearCleanedBlackMatteProxyCache();
-      clearCanvasMediaLayer();
-      clearCanvasMediaImageCache();
       runtimeMediaSizeByKey.clear();
       worldCssVarCache.clear();
       return;
@@ -10167,8 +10075,6 @@ function bindEvents() {
     demoteConnectedDeepMediaToLightweight();
     clearRuntimeImageObjectUrls();
     clearCleanedBlackMatteProxyCache();
-    clearCanvasMediaLayer();
-    clearCanvasMediaImageCache();
     runtimeMediaSizeByKey.clear();
     worldCssVarCache.clear();
   });
@@ -11404,7 +11310,6 @@ function runGraphFrame() {
     lastGraphLayoutZoom = state.viewZoom;
   }
 
-  renderCanvasMediaLayer(mediaScale, mediaLayoutT);
   updateLODClass(state.viewZoom);
   refreshDetailsPointerInteractivity(detailsVisibility);
 }
@@ -11440,328 +11345,6 @@ function renderNodePositions() {
     model.renderY = nextY;
     node.style.transform = `translate(${nextX}px, ${nextY}px)`;
   }
-}
-
-function clearCanvasMediaLayer() {
-  if (!mediaCanvasCtx || !mediaCanvasCssWidth || !mediaCanvasCssHeight) {
-    return;
-  }
-  mediaCanvasCtx.setTransform(1, 0, 0, 1, 0, 0);
-  mediaCanvasCtx.clearRect(0, 0, mediaCanvas.width || 1, mediaCanvas.height || 1);
-}
-
-function clearCanvasMediaImageCache() {
-  for (const entry of canvasMediaImageCache.values()) {
-    if (entry?.img) {
-      entry.img.onload = null;
-      entry.img.onerror = null;
-      entry.img.src = "";
-    }
-  }
-  canvasMediaImageCache.clear();
-}
-
-function deleteCanvasMediaImageEntry(key) {
-  const entry = canvasMediaImageCache.get(key);
-  if (entry?.img) {
-    entry.img.onload = null;
-    entry.img.onerror = null;
-    entry.img.src = "";
-  }
-  canvasMediaImageCache.delete(key);
-}
-
-function ensureCanvasMediaContext(width, height) {
-  if (!(mediaCanvas instanceof HTMLCanvasElement)) {
-    return null;
-  }
-  if (!mediaCanvasCtx) {
-    mediaCanvasCtx = mediaCanvas.getContext("2d", { alpha: true });
-  }
-  if (!mediaCanvasCtx) {
-    return null;
-  }
-
-  const pixelRatio = Math.min(window.devicePixelRatio || 1, CANVAS_MEDIA_MAX_PIXEL_RATIO);
-  const cssWidth = Math.max(1, Math.round(width));
-  const cssHeight = Math.max(1, Math.round(height));
-  const backingWidth = Math.max(1, Math.round(cssWidth * pixelRatio));
-  const backingHeight = Math.max(1, Math.round(cssHeight * pixelRatio));
-  if (
-    mediaCanvas.width !== backingWidth ||
-    mediaCanvas.height !== backingHeight ||
-    Math.abs(mediaCanvasPixelRatio - pixelRatio) > 0.001
-  ) {
-    mediaCanvas.width = backingWidth;
-    mediaCanvas.height = backingHeight;
-    mediaCanvasCssWidth = cssWidth;
-    mediaCanvasCssHeight = cssHeight;
-    mediaCanvasPixelRatio = pixelRatio;
-  }
-
-  mediaCanvasCtx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-  mediaCanvasCtx.clearRect(0, 0, cssWidth, cssHeight);
-  mediaCanvasCtx.imageSmoothingEnabled = true;
-  mediaCanvasCtx.imageSmoothingQuality = "high";
-  return mediaCanvasCtx;
-}
-
-function isCanvasMediaHighResolutionSrc(src) {
-  return typeof src === "string" && src.includes("/assets/mobile-media/");
-}
-
-function pruneCanvasMediaImageCache() {
-  let highResCount = 0;
-  for (const entry of canvasMediaImageCache.values()) {
-    if (isCanvasMediaHighResolutionSrc(entry?.src)) {
-      highResCount += 1;
-    }
-  }
-  while (highResCount > CANVAS_MEDIA_HIGH_RES_CACHE_LIMIT) {
-    let oldestKey = "";
-    let oldestUsedAt = Number.POSITIVE_INFINITY;
-    for (const [key, entry] of canvasMediaImageCache.entries()) {
-      if (!isCanvasMediaHighResolutionSrc(entry?.src)) {
-        continue;
-      }
-      const usedAt = Number(entry?.lastUsedAt) || 0;
-      if (usedAt < oldestUsedAt) {
-        oldestUsedAt = usedAt;
-        oldestKey = key;
-      }
-    }
-    if (!oldestKey) {
-      break;
-    }
-    deleteCanvasMediaImageEntry(oldestKey);
-    highResCount -= 1;
-  }
-
-  while (canvasMediaImageCache.size > CANVAS_MEDIA_CACHE_LIMIT) {
-    let oldestKey = "";
-    let oldestUsedAt = Number.POSITIVE_INFINITY;
-    for (const [key, entry] of canvasMediaImageCache.entries()) {
-      const usedAt = Number(entry?.lastUsedAt) || 0;
-      if (usedAt < oldestUsedAt) {
-        oldestUsedAt = usedAt;
-        oldestKey = key;
-      }
-    }
-    if (!oldestKey) {
-      break;
-    }
-    deleteCanvasMediaImageEntry(oldestKey);
-  }
-}
-
-function getCanvasMediaImageEntry(src) {
-  if (typeof src !== "string" || !src.trim()) {
-    return null;
-  }
-  const key = src.trim();
-  const now = performance.now();
-  const cached = canvasMediaImageCache.get(key);
-  if (cached) {
-    cached.lastUsedAt = now;
-    return cached;
-  }
-
-  const entry = {
-    img: new Image(),
-    src: key,
-    loaded: false,
-    failed: false,
-    serial: ++canvasMediaImageSerial,
-    lastUsedAt: now
-  };
-  entry.img.decoding = "async";
-  entry.img.onload = () => {
-    entry.loaded = true;
-    entry.failed = false;
-    wakeGraph(4);
-  };
-  entry.img.onerror = () => {
-    entry.loaded = false;
-    entry.failed = true;
-  };
-  entry.img.src = key;
-  canvasMediaImageCache.set(key, entry);
-  pruneCanvasMediaImageCache();
-  return entry;
-}
-
-function getCanvasMediaSources(model, media, mediaIndex) {
-  const fullSrc = typeof media?.src === "string" ? media.src.trim() : "";
-  if (!fullSrc) {
-    return { primary: "", fallback: "" };
-  }
-  const thumbSrc = getMediaThumbSrcByMediaSrc(fullSrc);
-  const previewSrc = getMediaPreviewSrcByMediaSrc(fullSrc);
-  const mobileSrc = getMobileMediaSrcByMediaSrc(fullSrc);
-  const isFocused =
-    model?.slug === state.focusedSlug &&
-    Math.max(0, Math.round(Number(state.focusedMediaIndex) || 0)) === mediaIndex;
-
-  if (isFocused) {
-    return {
-      primary: mobileSrc || previewSrc || thumbSrc || fullSrc,
-      fallback: thumbSrc || previewSrc || ""
-    };
-  }
-
-  return {
-    primary: thumbSrc || previewSrc || mobileSrc || fullSrc,
-    fallback: ""
-  };
-}
-
-function getRenderableCanvasMediaEntry(model, media, mediaIndex) {
-  const sources = getCanvasMediaSources(model, media, mediaIndex);
-  const primaryEntry = getCanvasMediaImageEntry(sources.primary);
-  if (primaryEntry?.loaded && !primaryEntry.failed) {
-    return primaryEntry;
-  }
-  const fallbackEntry = sources.fallback ? getCanvasMediaImageEntry(sources.fallback) : null;
-  if (fallbackEntry?.loaded && !fallbackEntry.failed) {
-    return fallbackEntry;
-  }
-  return null;
-}
-
-function roundedCanvasRectPath(ctx, x, y, width, height, radius) {
-  const r = Math.max(0, Math.min(radius, width * 0.5, height * 0.5));
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + width - r, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
-  ctx.lineTo(x + width, y + height - r);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
-  ctx.lineTo(x + r, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
-}
-
-function drawCanvasMediaImage(ctx, image, media, screenX, screenY, screenW, screenH) {
-  const imageWidth = Math.max(1, Number(image.naturalWidth) || Number(image.width) || 1);
-  const imageHeight = Math.max(1, Number(image.naturalHeight) || Number(image.height) || 1);
-  const containScale = Math.min(screenW / imageWidth, screenH / imageHeight);
-  const drawW = imageWidth * containScale;
-  const drawH = imageHeight * containScale;
-  const cx = screenX + screenW * 0.5;
-  const cy = screenY + screenH * 0.5;
-  const rotation = (Number.parseFloat(media?.r || "0") || 0) * (Math.PI / 180);
-
-  ctx.save();
-  ctx.translate(cx, cy);
-  if (rotation) {
-    ctx.rotate(rotation);
-  }
-  if (shouldRoundProjectMedia(media?.src || "")) {
-    roundedCanvasRectPath(
-      ctx,
-      -screenW * 0.5,
-      -screenH * 0.5,
-      screenW,
-      screenH,
-      CANVAS_MEDIA_CORNER_RADIUS_PX
-    );
-    ctx.clip();
-  }
-  ctx.drawImage(image, -drawW * 0.5, -drawH * 0.5, drawW, drawH);
-  ctx.restore();
-}
-
-function shouldDrawCanvasMediaForModel(model, project) {
-  if (!model?.visible || !project || !Array.isArray(project.media) || !project.media.length) {
-    return false;
-  }
-  if (
-    state.activeType === "naming" &&
-    !state.deepProjectSlug &&
-    model.nodeType === "project" &&
-    modelMatchesFilterType(model, "naming")
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function renderCanvasMediaLayer(mediaScale, mediaLayoutT) {
-  const active = shouldUseCanvasMediaRenderer();
-  stage.classList.toggle("uses-canvas-media", active);
-  if (!active) {
-    if (canvasMediaRendererWasActive) {
-      clearCanvasMediaLayer();
-      clearCanvasMediaImageCache();
-    }
-    canvasMediaRendererWasActive = false;
-    return;
-  }
-  canvasMediaRendererWasActive = true;
-
-  const width = state.stageWidth || stage.clientWidth || window.innerWidth || 1;
-  const height = state.stageHeight || stage.clientHeight || window.innerHeight || 1;
-  const ctx = ensureCanvasMediaContext(width, height);
-  if (!ctx) {
-    return;
-  }
-
-  const tx = width * 0.5 - state.viewX * state.viewZoom;
-  const ty = height * 0.5 - state.viewY * state.viewZoom;
-  const zoom = Math.max(0.0001, state.viewZoom);
-  const margin = CANVAS_MEDIA_VIEWPORT_MARGIN_PX;
-
-  for (const model of modelBySlug.values()) {
-    if (!model.visible || !nodeBySlug.has(model.slug)) {
-      continue;
-    }
-    const project = getDisplayProject(model);
-    if (!shouldDrawCanvasMediaForModel(model, project)) {
-      continue;
-    }
-
-    const mediaLayoutFar = mediaLayoutBySlug.get(model.slug) || project.media || [];
-    const mediaLayoutClose = mediaLayoutCloseBySlug.get(model.slug) || mediaLayoutFar;
-    if (!Array.isArray(mediaLayoutFar) || !mediaLayoutFar.length) {
-      continue;
-    }
-
-    const origin = getMediaLayoutOrigin(mediaLayoutFar);
-    const nodeWorldX = model.x - model.centerX;
-    const nodeWorldY = model.y - model.centerY;
-
-    for (const [mediaIndex, media] of mediaLayoutFar.entries()) {
-      if (!media || isMotionMediaSrc(media.src)) {
-        continue;
-      }
-      const mediaClose = (Array.isArray(mediaLayoutClose) && mediaLayoutClose[mediaIndex]) || media;
-      const localX = lerp(Number(media.x) || 0, Number(mediaClose.x) || 0, mediaLayoutT);
-      const localY = lerp(Number(media.y) || 0, Number(mediaClose.y) || 0, mediaLayoutT);
-      const mediaW = Math.max(1, Number(media.w) || Number(mediaClose.w) || 180);
-      const mediaH = Math.max(1, Number(media.h) || Number(mediaClose.h) || 180);
-      const scaledX = origin.x + (localX - origin.x) * mediaScale;
-      const scaledY = origin.y + (localY - origin.y) * mediaScale;
-      const screenX = tx + (nodeWorldX + scaledX) * zoom;
-      const screenY = ty + (nodeWorldY + scaledY) * zoom;
-      const screenW = mediaW * mediaScale * zoom;
-      const screenH = mediaH * mediaScale * zoom;
-      const radius = Math.hypot(screenW, screenH) * 0.5;
-      const cx = screenX + screenW * 0.5;
-      const cy = screenY + screenH * 0.5;
-      if (cx + radius < -margin || cx - radius > width + margin || cy + radius < -margin || cy - radius > height + margin) {
-        continue;
-      }
-
-      const entry = getRenderableCanvasMediaEntry(model, media, mediaIndex);
-      if (!entry?.img) {
-        continue;
-      }
-      drawCanvasMediaImage(ctx, entry.img, media, screenX, screenY, screenW, screenH);
-    }
-  }
-  pruneCanvasMediaImageCache();
 }
 
 function updateLODClass(zoom) {
