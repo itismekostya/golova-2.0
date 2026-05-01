@@ -112,6 +112,13 @@ const MOBILE_HOME_PULL_DEEP_BONUS_PX = 40;
 const MOBILE_HOME_PULL_STRENGTH = 0.032;
 const EMPTY_STEP_CENTER_PULL = 0.56;
 const MOBILE_EMPTY_STEP_T = 0.31;
+const GRAPH_DIRTY_FRAME_COUNT = 4;
+const GRAPH_INITIAL_DIRTY_FRAMES = 12;
+const GRAPH_CAMERA_SETTLE_EPS = 0.012;
+const GRAPH_ZOOM_SETTLE_EPS = 0.00008;
+const GRAPH_FRAME_CAMERA_EPS = 0.018;
+const GRAPH_FRAME_ZOOM_EPS = 0.00016;
+const GRAPH_LAYOUT_ZOOM_EPS = 0.00028;
 const CONTENT_DETAILS_TOP_GAP = UI_SPACE_UNIT;
 const CONTENT_CLUSTER_BASE_RADIUS = 132;
 const CONTENT_CLUSTER_RADIUS_STEP = 52;
@@ -390,6 +397,8 @@ let mediaHydrationQueue = [];
 const queuedMediaHydrationElements = new Set();
 let mediaHydrationRafId = null;
 const worldCssVarCache = new Map();
+let graphDirtyFrames = GRAPH_INITIAL_DIRTY_FRAMES;
+let lastGraphLayoutZoom = Number.NaN;
 
 function clearFocusedMediaTarget() {
   state.focusedMediaIndex = -1;
@@ -2808,8 +2817,14 @@ function getContentChildSlugs(sourceSlug) {
 }
 
 function refreshModelVisibility(type = state.activeType) {
+  let changed = false;
   for (const model of modelBySlug.values()) {
     const visible = isModelVisibleForFilter(model, type);
+    if (model.visible !== visible) {
+      changed = true;
+      model.renderX = Number.NaN;
+      model.renderY = Number.NaN;
+    }
     model.visible = visible;
     const node = nodeBySlug.get(model.slug);
     if (node) {
@@ -2817,6 +2832,9 @@ function refreshModelVisibility(type = state.activeType) {
     }
   }
   state.detailsInteractionRevision += 1;
+  if (changed) {
+    wakeGraph(8);
+  }
 }
 
 function refreshSeeMoreLabels() {
@@ -10393,6 +10411,7 @@ function onPointerMove(event) {
   const panSpeed = getPanSpeedMultiplier(drag.pointerType || event.pointerType || "");
   state.targetX -= (dx * panSpeed) / state.targetZoom;
   state.targetY -= (dy * panSpeed) / state.targetZoom;
+  wakeGraph(2);
 
   const now = performance.now();
   const dt = Math.max(16, now - drag.time);
@@ -10616,6 +10635,7 @@ function updatePinchGesture() {
   const panSpeed = getPinchPanSpeedMultiplier();
   state.targetX -= (centerDx * panSpeed) / state.targetZoom;
   state.targetY -= (centerDy * panSpeed) / state.targetZoom;
+  wakeGraph(2);
   pinch.lastCenter = center;
 }
 
@@ -10669,6 +10689,8 @@ function zoomAtClientPoint(clientX, clientY, nextZoom) {
     clearFocusedProjectState();
     refreshFocusedClasses();
   }
+
+  wakeGraph();
 }
 
 function screenToWorld(clientX, clientY, rect, viewX, viewY, viewZoom) {
@@ -10691,15 +10713,148 @@ function setWorldNumberProperty(name, value, { epsilon = 0.0005, unit = "" } = {
   return true;
 }
 
+function wakeGraph(frames = GRAPH_DIRTY_FRAME_COUNT) {
+  const safeFrames = Math.max(1, Math.round(Number(frames) || GRAPH_DIRTY_FRAME_COUNT));
+  graphDirtyFrames = Math.max(graphDirtyFrames, safeFrames);
+}
+
+function consumeGraphDirtyFrame() {
+  if (graphDirtyFrames <= 0) {
+    return false;
+  }
+  graphDirtyFrames -= 1;
+  return true;
+}
+
+function getCameraTargetDelta() {
+  return {
+    pan: Math.hypot(state.targetX - state.viewX, state.targetY - state.viewY),
+    zoom: Math.abs(state.targetZoom - state.viewZoom)
+  };
+}
+
+function hasVisibleUnrenderedModel() {
+  for (const model of modelBySlug.values()) {
+    if (!model.visible) {
+      continue;
+    }
+    if (!nodeBySlug.has(model.slug)) {
+      continue;
+    }
+    if (!Number.isFinite(model.renderX) || !Number.isFinite(model.renderY)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function needsHomeStabilizationFrame() {
+  if (drag || pinch) {
+    return false;
+  }
+
+  const overviewHome = getActiveOverviewHome();
+  const nearHome = state.targetZoom <= overviewHome.zoom * HOME_LOCK_ZOOM_FACTOR;
+  if (!nearHome) {
+    return false;
+  }
+
+  if (
+    !state.stepPullActive &&
+    !state.deepProjectSlug &&
+    state.focusedSlug &&
+    state.targetZoom <= overviewHome.zoom * HOME_SNAP_ZOOM_FACTOR
+  ) {
+    return true;
+  }
+
+  if (
+    state.targetZoom <= overviewHome.zoom * HOME_SNAP_ZOOM_FACTOR &&
+    Math.abs((overviewHome.zoom || MIN_ZOOM) - (state.targetZoom || MIN_ZOOM)) > GRAPH_ZOOM_SETTLE_EPS
+  ) {
+    return true;
+  }
+
+  const dx = overviewHome.x - state.targetX;
+  const dy = overviewHome.y - state.targetY;
+  if (Math.abs(dx) <= GRAPH_CAMERA_SETTLE_EPS && Math.abs(dy) <= GRAPH_CAMERA_SETTLE_EPS) {
+    return false;
+  }
+
+  const viewportWidth = state.stageWidth || stage.clientWidth || window.innerWidth || 0;
+  const isMobileViewport = viewportWidth <= MOBILE_TITLE_BREAKPOINT;
+  const isPhysicalOverview = state.activeType === "physical" && !state.deepProjectSlug;
+  const zoom = Math.max(0.0001, state.targetZoom || state.viewZoom || overviewHome.zoom || MIN_ZOOM);
+  const centerPullLeash =
+    state.deepProjectSlug || isMobileViewport || isPhysicalOverview ? getAdaptiveCenterPullLeash(zoom) : { x: 0, y: 0 };
+  const pullDx = getCenterPullAxisExcess(dx, centerPullLeash.x);
+  const pullDy = getCenterPullAxisExcess(dy, centerPullLeash.y);
+
+  if (isMobileViewport) {
+    const offsetPx = Math.hypot(pullDx, pullDy) * zoom;
+    const deadZonePx = MOBILE_HOME_PULL_DEADZONE_PX + (state.deepProjectSlug ? MOBILE_HOME_PULL_DEEP_BONUS_PX : 0);
+    return offsetPx > deadZonePx + 1;
+  }
+
+  return Math.abs(pullDx) > GRAPH_CAMERA_SETTLE_EPS || Math.abs(pullDy) > GRAPH_CAMERA_SETTLE_EPS;
+}
+
+function shouldRunGraphFrame() {
+  if (graphDirtyFrames > 0 || drag || pinch || state.stepPullActive || state.focusTrackActive) {
+    return true;
+  }
+
+  if (Math.abs(inertia.x) > 0.0002 || Math.abs(inertia.y) > 0.0002) {
+    return true;
+  }
+
+  const delta = getCameraTargetDelta();
+  if (delta.pan > GRAPH_FRAME_CAMERA_EPS || delta.zoom > GRAPH_FRAME_ZOOM_EPS) {
+    return true;
+  }
+
+  if (hasVisibleUnrenderedModel()) {
+    return true;
+  }
+
+  return needsHomeStabilizationFrame();
+}
+
+function snapCameraIfSettled() {
+  if (drag || pinch || state.stepPullActive) {
+    return;
+  }
+
+  if (Math.abs(state.targetX - state.viewX) <= GRAPH_CAMERA_SETTLE_EPS) {
+    state.viewX = state.targetX;
+  }
+  if (Math.abs(state.targetY - state.viewY) <= GRAPH_CAMERA_SETTLE_EPS) {
+    state.viewY = state.targetY;
+  }
+  if (Math.abs(state.targetZoom - state.viewZoom) <= GRAPH_ZOOM_SETTLE_EPS) {
+    state.viewZoom = state.targetZoom;
+  }
+}
+
 function setTargetView(x, y, zoom, maxZoom = MAX_ZOOM) {
   state.targetX = x;
   state.targetY = y;
   state.targetZoom = clamp(zoom, MIN_ZOOM, maxZoom);
+  wakeGraph();
 }
 
 function tick() {
+  if (shouldRunGraphFrame()) {
+    runGraphFrame();
+  }
+  updateHeadWidgetFrame();
+  requestAnimationFrame(tick);
+}
+
+function runGraphFrame() {
+  const dirtyFrame = consumeGraphDirtyFrame();
+  const zoomBeforeEasing = state.viewZoom;
   stabilizeHomeLayout();
-  runGraphSimulation();
 
   if (!drag && !pinch && state.stepPullActive) {
     const startZoom = state.stepPullStartZoom;
@@ -10740,6 +10895,11 @@ function tick() {
     if (focusCenter && Number.isFinite(focusCenter.x) && Number.isFinite(focusCenter.y)) {
       state.targetX = focusCenter.x;
       state.targetY = focusCenter.y;
+      const focusPanDelta = Math.hypot(state.targetX - state.viewX, state.targetY - state.viewY);
+      const focusZoomDelta = Math.abs(state.targetZoom - state.viewZoom);
+      if (focusPanDelta <= GRAPH_FRAME_CAMERA_EPS && focusZoomDelta <= GRAPH_FRAME_ZOOM_EPS) {
+        state.focusTrackActive = false;
+      }
     } else {
       state.focusTrackActive = false;
     }
@@ -10755,6 +10915,7 @@ function tick() {
   state.viewX += (state.targetX - state.viewX) * panEasing;
   state.viewY += (state.targetY - state.viewY) * panEasing;
   state.viewZoom += (state.targetZoom - state.viewZoom) * zoomEasing;
+  snapCameraIfSettled();
 
   const width = state.stageWidth || stage.clientWidth || window.innerWidth || 1;
   const height = state.stageHeight || stage.clientHeight || window.innerHeight || 1;
@@ -10868,11 +11029,18 @@ function tick() {
     world.style.setProperty("--overview-title-visibility", `${overviewTitleVisibility}`);
   }
 
-  renderNodePositions();
+  const layoutZoomChanged =
+    !Number.isFinite(lastGraphLayoutZoom) ||
+    Math.abs(state.viewZoom - lastGraphLayoutZoom) > GRAPH_LAYOUT_ZOOM_EPS ||
+    Math.abs(state.viewZoom - zoomBeforeEasing) > GRAPH_LAYOUT_ZOOM_EPS;
+  if (dirtyFrame || layoutZoomChanged || hasVisibleUnrenderedModel()) {
+    runGraphSimulation();
+    renderNodePositions();
+    lastGraphLayoutZoom = state.viewZoom;
+  }
+
   updateLODClass(state.viewZoom);
   refreshDetailsPointerInteractivity(detailsVisibility);
-  updateHeadWidgetFrame();
-  requestAnimationFrame(tick);
 }
 
 function runGraphSimulation() {
@@ -11072,16 +11240,9 @@ function stabilizeHomeLayout() {
     state.targetZoom += (overviewHome.zoom - state.targetZoom) * 0.05;
   }
 
-  const restore = state.targetZoom <= overviewHome.zoom * HOME_SNAP_ZOOM_FACTOR ? 0.075 : 0.028;
-  for (const model of modelBySlug.values()) {
-    if (!model.visible) {
-      continue;
-    }
-    model.x += (model.ax - model.x) * restore;
-    model.y += (model.ay - model.y) * restore;
-    model.vx *= 0.8;
-    model.vy *= 0.8;
-  }
+  // Node positions are derived from anchors and zoom in runGraphSimulation().
+  // Keeping this stabilizer camera-only avoids touching every visible DOM model
+  // while the user is simply panning around the overview.
 }
 
 function getLayoutAspectFactors() {
