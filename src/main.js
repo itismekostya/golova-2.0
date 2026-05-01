@@ -796,7 +796,7 @@ function releaseContentNodeMedia(node) {
 
   for (const mediaElement of node.querySelectorAll(".project-media")) {
     const originalSrc = typeof mediaElement.dataset.mediaSrc === "string" ? mediaElement.dataset.mediaSrc.trim() : "";
-    const previewSrc = getMediaElementPreviewSrc(mediaElement);
+    const previewSrc = getMediaElementLightweightSrc(mediaElement);
     mediaElement.dataset.mediaHydrated = "false";
     mediaElement.dataset.deferredSrc = previewSrc || originalSrc;
     mediaElement.dataset.previewActive = previewSrc ? "true" : "false";
@@ -1548,6 +1548,11 @@ function getMediaPreviewSrcByMediaSrc(src) {
   return typeof preview?.src === "string" && preview.src.trim() ? preview.src.trim() : "";
 }
 
+function getMediaThumbSrcByMediaSrc(src) {
+  const preview = getMediaPreviewBySrc(src);
+  return typeof preview?.thumbSrc === "string" && preview.thumbSrc.trim() ? preview.thumbSrc.trim() : "";
+}
+
 function getMobileMediaSrcByMediaSrc(src) {
   const preview = getMediaPreviewBySrc(src);
   return typeof preview?.mobileSrc === "string" && preview.mobileSrc.trim() ? preview.mobileSrc.trim() : "";
@@ -1998,7 +2003,7 @@ function evictHydratedMediaElement(mediaElement) {
   if (!originalSrc) {
     return;
   }
-  const previewSrc = getMediaElementPreviewSrc(mediaElement);
+  const previewSrc = getMediaElementLightweightSrc(mediaElement);
   mediaElement.dataset.mediaHydrated = "false";
   mediaElement.dataset.deferredSrc = previewSrc || originalSrc;
   mediaElement.dataset.previewActive = previewSrc ? "true" : "false";
@@ -2121,8 +2126,19 @@ function getMediaElementPreviewSrc(mediaElement) {
   return typeof mediaElement?.dataset?.previewSrc === "string" ? mediaElement.dataset.previewSrc.trim() : "";
 }
 
+function getMediaElementThumbSrc(mediaElement) {
+  return typeof mediaElement?.dataset?.thumbSrc === "string" ? mediaElement.dataset.thumbSrc.trim() : "";
+}
+
 function getMediaElementMobileSrc(mediaElement) {
   return typeof mediaElement?.dataset?.mobileSrc === "string" ? mediaElement.dataset.mobileSrc.trim() : "";
+}
+
+function getMediaElementLightweightSrc(mediaElement) {
+  if (isMobileMediaMode()) {
+    return getMediaElementThumbSrc(mediaElement) || getMediaElementPreviewSrc(mediaElement);
+  }
+  return getMediaElementPreviewSrc(mediaElement);
 }
 
 function getMediaElementFullSrc(mediaElement) {
@@ -2390,7 +2406,7 @@ function setVideoElementToPreviewPosterOnly(videoElement) {
   if (!(videoElement instanceof HTMLVideoElement)) {
     return false;
   }
-  const previewSrc = getMediaElementPreviewSrc(videoElement);
+  const previewSrc = getMediaElementLightweightSrc(videoElement);
   if (!previewSrc) {
     return false;
   }
@@ -2435,7 +2451,7 @@ function demoteMediaElementToPreview(mediaElement) {
   if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
     return false;
   }
-  const previewSrc = getMediaElementPreviewSrc(mediaElement);
+  const previewSrc = getMediaElementLightweightSrc(mediaElement);
   if (!previewSrc || mediaElementUsesPreviewSource(mediaElement)) {
     return false;
   }
@@ -7738,7 +7754,12 @@ function createProjectNode(project) {
       const graphMediaSrc = USE_GRAPH_MEDIA_PROXIES ? getPreferredGraphProxySrc(graphProxy) || mediaFar.src : mediaFar.src;
       const usesGraphProxy = Boolean(USE_GRAPH_MEDIA_PROXIES && graphProxy && graphMediaSrc && graphMediaSrc !== mediaFar.src);
       const shouldUsePreview = USE_CONTENT_MEDIA_PREVIEWS && (isContentNode || isMobileMediaMode());
-      const previewSrc = shouldUsePreview ? getMediaPreviewSrcByMediaSrc(mediaFar.src) : "";
+      const thumbSrc = getMediaThumbSrcByMediaSrc(mediaFar.src);
+      const previewSrc = shouldUsePreview
+        ? isMobileMediaMode()
+          ? thumbSrc || getMediaPreviewSrcByMediaSrc(mediaFar.src)
+          : getMediaPreviewSrcByMediaSrc(mediaFar.src)
+        : "";
       const mobileMediaSrc = getMobileMediaSrcByMediaSrc(mediaFar.src);
       const usesPreview = Boolean(previewSrc && previewSrc !== mediaFar.src);
       const motionPosterSrc = previewSrc || videoPosterSrc;
@@ -7813,6 +7834,7 @@ function createProjectNode(project) {
         !renderVideoAsPoster && usesGraphProxy && typeof graphProxy?.posterSrc === "string" ? graphProxy.posterSrc : "";
       mediaElement.dataset.proxyMatte = usesGraphProxy && typeof graphProxy?.matte === "string" ? graphProxy.matte : "";
       mediaElement.dataset.proxyActive = !renderVideoAsPoster && isContentNode && usesGraphProxy ? "true" : "false";
+      mediaElement.dataset.thumbSrc = thumbSrc && thumbSrc !== mediaFar.src ? thumbSrc : "";
       mediaElement.dataset.previewSrc = usesPreview ? previewSrc : "";
       mediaElement.dataset.previewActive = usesPreview ? "true" : "false";
       mediaElement.dataset.mobileSrc = mobileMediaSrc && mobileMediaSrc !== mediaFar.src ? mobileMediaSrc : "";
