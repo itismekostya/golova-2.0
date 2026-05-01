@@ -400,12 +400,12 @@ bootstrap();
 
 function bootstrap() {
   const hasInitialProjectGraphLocation = Boolean(getProjectGraphSlugFromLocationSearch() || getProjectGraphSlugFromLocationHash());
+  updateViewportSize();
   initGraphModels();
   refreshFilterTypesFromModels();
   settleInitialLayout();
   buildNodes();
   buildFilters();
-  updateViewportSize();
   refreshMediaLayoutsFromDOM();
   refreshModelGeometriesFromDOM();
   rebuildLayoutsForViewport();
@@ -1544,12 +1544,32 @@ function isMobileViewport() {
   return viewportWidth <= MOBILE_TITLE_BREAKPOINT;
 }
 
+function isMobileMediaMode() {
+  if (isMobileViewport()) {
+    return true;
+  }
+  const viewportWidth = state.stageWidth || stage.clientWidth || window.innerWidth || 0;
+  const viewportHeight = state.stageHeight || stage.clientHeight || window.innerHeight || 0;
+  const shortestViewportSide = Math.min(
+    viewportWidth || Number.POSITIVE_INFINITY,
+    viewportHeight || Number.POSITIVE_INFINITY
+  );
+  const shortestScreenSide =
+    typeof window.screen === "object"
+      ? Math.min(Number(window.screen.width) || Number.POSITIVE_INFINITY, Number(window.screen.height) || Number.POSITIVE_INFINITY)
+      : Number.POSITIVE_INFINITY;
+  const coarsePointer =
+    typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+  const hasTouch = Number(navigator.maxTouchPoints) > 0 || "ontouchstart" in window;
+  return (coarsePointer || hasTouch) && Math.min(shortestViewportSide, shortestScreenSide) <= MOBILE_TITLE_BREAKPOINT;
+}
+
 function shouldDisableVideoPlayback() {
-  return DISABLE_ALL_VIDEO_MEDIA || (DISABLE_MOBILE_VIDEO_MEDIA && isMobileViewport());
+  return DISABLE_ALL_VIDEO_MEDIA || (DISABLE_MOBILE_VIDEO_MEDIA && isMobileMediaMode());
 }
 
 function shouldHideMotionMediaOnMobile(src) {
-  return HIDE_MOBILE_MOTION_MEDIA && isMobileViewport() && isMotionMediaSrc(src);
+  return HIDE_MOBILE_MOTION_MEDIA && isMobileMediaMode() && isMotionMediaSrc(src);
 }
 
 function getVideoPosterSrcByMediaSrc(src) {
@@ -7478,7 +7498,7 @@ function createProjectNode(project) {
       const videoPosterSrc = isVideo && USE_GRAPH_MEDIA_PROXIES ? getVideoPosterSrcByMediaSrc(mediaFar.src) : "";
       const graphMediaSrc = USE_GRAPH_MEDIA_PROXIES ? getPreferredGraphProxySrc(graphProxy) || mediaFar.src : mediaFar.src;
       const usesGraphProxy = Boolean(USE_GRAPH_MEDIA_PROXIES && graphProxy && graphMediaSrc && graphMediaSrc !== mediaFar.src);
-      const shouldUsePreview = USE_CONTENT_MEDIA_PREVIEWS && (isContentNode || isMobileViewport());
+      const shouldUsePreview = USE_CONTENT_MEDIA_PREVIEWS && (isContentNode || isMobileMediaMode());
       const previewSrc = shouldUsePreview ? getMediaPreviewSrcByMediaSrc(mediaFar.src) : "";
       const usesPreview = Boolean(previewSrc && previewSrc !== mediaFar.src);
       const motionPosterSrc = previewSrc || videoPosterSrc;
