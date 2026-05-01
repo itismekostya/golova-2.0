@@ -1,5 +1,6 @@
 import { projects } from "./projects.js";
 import { mediaManifestByName } from "./media-manifest.js";
+import { mediaPreviewManifestBySrc } from "./media-preview-manifest.js";
 import { mediaProxyManifestBySrc } from "./media-proxy-manifest.js";
 
 const stage = document.getElementById("stage");
@@ -148,6 +149,8 @@ const MOBILE_MEDIA_HYDRATION_ROOT_MARGIN_PX = 120;
 const MEDIA_EVICTION_ROOT_MARGIN_PX = 1500;
 const MOBILE_MEDIA_EVICTION_ROOT_MARGIN_PX = 520;
 const DISABLE_ALL_VIDEO_MEDIA = false;
+const DISABLE_MOBILE_VIDEO_MEDIA = true;
+const USE_CONTENT_MEDIA_PREVIEWS = true;
 const USE_GRAPH_MEDIA_PROXIES = false;
 const HEAD_MODEL_SRC = "./assets/head/golova_model.glb";
 const HEAD_USE_BAKED_TEXTURE = true;
@@ -383,6 +386,9 @@ function setFocusedMediaTarget(mediaIndex = -1) {
 }
 
 function clearFocusedProjectState() {
+  if (promotedDeepMediaElement) {
+    clearPromotedDeepMediaElement();
+  }
   state.focusedSlug = null;
   clearFocusedMediaTarget();
   focusedModel = null;
@@ -767,8 +773,10 @@ function releaseContentNodeMedia(node) {
 
   for (const mediaElement of node.querySelectorAll(".project-media")) {
     const originalSrc = typeof mediaElement.dataset.mediaSrc === "string" ? mediaElement.dataset.mediaSrc.trim() : "";
+    const previewSrc = getMediaElementPreviewSrc(mediaElement);
     mediaElement.dataset.mediaHydrated = "false";
-    mediaElement.dataset.deferredSrc = originalSrc;
+    mediaElement.dataset.deferredSrc = previewSrc || originalSrc;
+    mediaElement.dataset.previewActive = previewSrc ? "true" : "false";
     unobserveMediaElement(mediaElement);
 
     if (mediaElement instanceof HTMLVideoElement) {
@@ -1451,6 +1459,14 @@ function isVideoMediaSrc(src) {
   return key.endsWith(".mp4") || key.endsWith(".m4v") || key.endsWith(".mov") || key.endsWith(".webm");
 }
 
+function isGifMediaSrc(src) {
+  return getMediaSrcKey(src).endsWith(".gif");
+}
+
+function isMotionMediaSrc(src) {
+  return isVideoMediaSrc(src) || isGifMediaSrc(src);
+}
+
 function shouldRoundProjectMedia(src) {
   return !isSvgMediaSrc(src);
 }
@@ -1488,6 +1504,22 @@ function getGraphMediaProxyBySrc(src) {
   return entry;
 }
 
+function getMediaPreviewBySrc(src) {
+  if (!USE_CONTENT_MEDIA_PREVIEWS || typeof src !== "string" || !src.trim()) {
+    return null;
+  }
+  const exact = mediaPreviewManifestBySrc[src.trim()];
+  if (exact && typeof exact === "object" && typeof exact.src === "string" && exact.src.trim()) {
+    return exact;
+  }
+  return null;
+}
+
+function getMediaPreviewSrcByMediaSrc(src) {
+  const preview = getMediaPreviewBySrc(src);
+  return typeof preview?.src === "string" && preview.src.trim() ? preview.src.trim() : "";
+}
+
 function getPreferredGraphProxySrc(entry) {
   if (!entry || typeof entry !== "object") {
     return "";
@@ -1505,6 +1537,10 @@ function getPreferredGraphProxySrc(entry) {
 function isMobileViewport() {
   const viewportWidth = state.stageWidth || stage.clientWidth || window.innerWidth || 0;
   return viewportWidth <= MOBILE_TITLE_BREAKPOINT;
+}
+
+function shouldDisableVideoPlayback() {
+  return DISABLE_ALL_VIDEO_MEDIA || (DISABLE_MOBILE_VIDEO_MEDIA && isMobileViewport());
 }
 
 function getVideoPosterSrcByMediaSrc(src) {
@@ -1613,6 +1649,12 @@ function tryAutoplayProjectMediaVideo(videoElement) {
   if (!(videoElement instanceof HTMLVideoElement)) {
     return;
   }
+  if (shouldDisableVideoPlayback()) {
+    if (!setVideoElementToPreviewPosterOnly(videoElement) && !setVideoElementToPosterOnly(videoElement)) {
+      clearVideoElementPlaybackSource(videoElement);
+    }
+    return;
+  }
   if (videoElement.dataset.videoPosterOnly === "true" || !(videoElement.currentSrc || videoElement.src || "").trim()) {
     return;
   }
@@ -1636,6 +1678,18 @@ function hydrateDeferredProjectMediaElement(slug, mediaIndex, mediaElement) {
   mediaElement.dataset.deferredSrc = "";
 
   if (mediaElement instanceof HTMLVideoElement) {
+    if (shouldDisableVideoPlayback()) {
+      if (!setVideoElementToPreviewPosterOnly(mediaElement) && !setVideoElementToPosterOnly(mediaElement)) {
+        clearVideoElementPlaybackSource(mediaElement);
+      }
+      return true;
+    }
+
+    if (mediaElementUsesPreviewSource(mediaElement)) {
+      setVideoElementToPreviewPosterOnly(mediaElement);
+      return true;
+    }
+
     if (shouldUsePosterOnlyVideoProxy(mediaElement)) {
       const posterSrc = getMediaElementProxyPosterSrc(mediaElement);
       mediaElement.dataset.videoPosterOnly = "true";
@@ -1805,8 +1859,10 @@ function evictHydratedMediaElement(mediaElement) {
   if (!originalSrc) {
     return;
   }
+  const previewSrc = getMediaElementPreviewSrc(mediaElement);
   mediaElement.dataset.mediaHydrated = "false";
-  mediaElement.dataset.deferredSrc = originalSrc;
+  mediaElement.dataset.deferredSrc = previewSrc || originalSrc;
+  mediaElement.dataset.previewActive = previewSrc ? "true" : "false";
 
   if (mediaElement instanceof HTMLVideoElement) {
     try {
@@ -1921,6 +1977,10 @@ function getMediaElementProxyMatte(mediaElement) {
   return typeof mediaElement?.dataset?.proxyMatte === "string" ? mediaElement.dataset.proxyMatte.trim().toLowerCase() : "";
 }
 
+function getMediaElementPreviewSrc(mediaElement) {
+  return typeof mediaElement?.dataset?.previewSrc === "string" ? mediaElement.dataset.previewSrc.trim() : "";
+}
+
 function getMediaElementFullSrc(mediaElement) {
   return typeof mediaElement?.dataset?.mediaSrc === "string" ? mediaElement.dataset.mediaSrc.trim() : "";
 }
@@ -1931,6 +1991,14 @@ function mediaElementUsesProxySource(mediaElement) {
     return false;
   }
   return mediaElement?.dataset?.proxyActive === "true";
+}
+
+function mediaElementUsesPreviewSource(mediaElement) {
+  const previewSrc = getMediaElementPreviewSrc(mediaElement);
+  if (!previewSrc) {
+    return false;
+  }
+  return mediaElement?.dataset?.previewActive === "true";
 }
 
 function getResolvedMediaElementProxySrc(mediaElement) {
@@ -2142,6 +2210,14 @@ function setVideoElementToPosterOnly(videoElement) {
   videoElement.dataset.proxyActive = "true";
   videoElement.dataset.videoPosterOnly = "true";
   videoElement.poster = posterSrc;
+  clearVideoElementPlaybackSource(videoElement);
+  return true;
+}
+
+function clearVideoElementPlaybackSource(videoElement) {
+  if (!(videoElement instanceof HTMLVideoElement)) {
+    return false;
+  }
   try {
     videoElement.pause();
   } catch (_error) {
@@ -2154,6 +2230,21 @@ function setVideoElementToPosterOnly(videoElement) {
     videoElement.load();
   }
   return true;
+}
+
+function setVideoElementToPreviewPosterOnly(videoElement) {
+  if (!(videoElement instanceof HTMLVideoElement)) {
+    return false;
+  }
+  const previewSrc = getMediaElementPreviewSrc(videoElement);
+  if (!previewSrc) {
+    return false;
+  }
+
+  videoElement.dataset.previewActive = "true";
+  videoElement.dataset.videoPosterOnly = "true";
+  videoElement.poster = previewSrc;
+  return clearVideoElementPlaybackSource(videoElement);
 }
 
 function demoteMediaElementToProxy(mediaElement) {
@@ -2182,17 +2273,52 @@ function demoteMediaElementToProxy(mediaElement) {
   return true;
 }
 
+function demoteMediaElementToPreview(mediaElement) {
+  if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
+    return false;
+  }
+  const previewSrc = getMediaElementPreviewSrc(mediaElement);
+  if (!previewSrc || mediaElementUsesPreviewSource(mediaElement)) {
+    return false;
+  }
+
+  mediaElement.dataset.proxyActive = "false";
+  mediaElement.dataset.previewActive = "true";
+  if (mediaElement instanceof HTMLVideoElement) {
+    return setVideoElementToPreviewPosterOnly(mediaElement);
+  }
+
+  mediaElement.dataset.videoPosterOnly = "false";
+  mediaElement.src = previewSrc;
+  return true;
+}
+
+function demoteMediaElementToLightweightSource(mediaElement) {
+  if (demoteMediaElementToProxy(mediaElement)) {
+    return true;
+  }
+  return demoteMediaElementToPreview(mediaElement);
+}
+
 function setMediaElementToFullSource(mediaElement, { trackPromotion = false } = {}) {
   if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
     return false;
   }
   const fullSrc = getMediaElementFullSrc(mediaElement);
   const proxySrc = getMediaElementProxySrc(mediaElement);
-  if (!fullSrc || !proxySrc) {
+  const previewSrc = getMediaElementPreviewSrc(mediaElement);
+  if (!fullSrc || (!proxySrc && !previewSrc)) {
+    return false;
+  }
+  if (shouldDisableVideoPlayback() && isMotionMediaSrc(fullSrc)) {
+    if (!demoteMediaElementToLightweightSource(mediaElement) && mediaElement instanceof HTMLVideoElement) {
+      clearVideoElementPlaybackSource(mediaElement);
+    }
     return false;
   }
   if (getMediaSrcKey(fullSrc) === getMediaSrcKey(mediaElement.currentSrc || mediaElement.src || "")) {
     mediaElement.dataset.proxyActive = "false";
+    mediaElement.dataset.previewActive = "false";
     mediaElement.dataset.videoPosterOnly = "false";
     if (trackPromotion) {
       promotedDeepMediaElement = mediaElement;
@@ -2201,6 +2327,7 @@ function setMediaElementToFullSource(mediaElement, { trackPromotion = false } = 
   }
 
   mediaElement.dataset.proxyActive = "false";
+  mediaElement.dataset.previewActive = "false";
   mediaElement.dataset.videoPosterOnly = "false";
   mediaElement.src = fullSrc;
   if (mediaElement instanceof HTMLVideoElement) {
@@ -2220,13 +2347,13 @@ function clearPromotedDeepMediaElement() {
   if (!promotedDeepMediaElement) {
     return;
   }
-  demoteMediaElementToProxy(promotedDeepMediaElement);
+  demoteMediaElementToLightweightSource(promotedDeepMediaElement);
   promotedDeepMediaElement = null;
 }
 
 function promoteMediaElementToFullSource(mediaElement) {
   if (promotedDeepMediaElement && promotedDeepMediaElement !== mediaElement) {
-    demoteMediaElementToProxy(promotedDeepMediaElement);
+    demoteMediaElementToLightweightSource(promotedDeepMediaElement);
   }
   return setMediaElementToFullSource(mediaElement, { trackPromotion: true });
 }
@@ -2286,7 +2413,7 @@ function handleProjectMediaElementLoad(slug, mediaIndex, mediaElement) {
     return;
   }
 
-  if (mediaElementUsesProxySource(mediaElement)) {
+  if (mediaElementUsesProxySource(mediaElement) || mediaElementUsesPreviewSource(mediaElement)) {
     return;
   }
 
@@ -6533,7 +6660,7 @@ function focusProjectMediaElement(mediaElement) {
   const zoom = focusMaxZoom;
   const mediaIndex = Number.parseInt(mediaElement.dataset.mediaIndex || "0", 10);
 
-  if (state.deepProjectSlug && getMediaElementProxySrc(mediaElement)) {
+  if (state.deepProjectSlug && (getMediaElementProxySrc(mediaElement) || getMediaElementPreviewSrc(mediaElement))) {
     promoteMediaElementToFullSource(mediaElement);
   } else if (promotedDeepMediaElement && promotedDeepMediaElement !== mediaElement) {
     clearPromotedDeepMediaElement();
@@ -7332,13 +7459,19 @@ function createProjectNode(project) {
     for (const [index, mediaFar] of mediaFarList.entries()) {
       const mediaClose = mediaCloseList[index] || mediaFar;
       const isVideo = isVideoMediaSrc(mediaFar.src);
+      const isMotion = isVideo || isGifMediaSrc(mediaFar.src);
       const isSvg = isSvgMediaSrc(mediaFar.src);
       const shouldRoundMedia = shouldRoundProjectMedia(mediaFar.src);
       const graphProxy = USE_GRAPH_MEDIA_PROXIES ? getGraphMediaProxyBySrc(mediaFar.src) : null;
       const videoPosterSrc = isVideo && USE_GRAPH_MEDIA_PROXIES ? getVideoPosterSrcByMediaSrc(mediaFar.src) : "";
-      const renderVideoAsPoster = isVideo && DISABLE_ALL_VIDEO_MEDIA && Boolean(videoPosterSrc);
       const graphMediaSrc = USE_GRAPH_MEDIA_PROXIES ? getPreferredGraphProxySrc(graphProxy) || mediaFar.src : mediaFar.src;
       const usesGraphProxy = Boolean(USE_GRAPH_MEDIA_PROXIES && graphProxy && graphMediaSrc && graphMediaSrc !== mediaFar.src);
+      const shouldUsePreview = USE_CONTENT_MEDIA_PREVIEWS && (isContentNode || isMobileViewport());
+      const previewSrc = shouldUsePreview ? getMediaPreviewSrcByMediaSrc(mediaFar.src) : "";
+      const usesPreview = Boolean(previewSrc && previewSrc !== mediaFar.src);
+      const motionPosterSrc = previewSrc || videoPosterSrc;
+      const renderVideoAsPoster = isMotion && shouldDisableVideoPlayback() && Boolean(motionPosterSrc);
+      const lightweightMediaSrc = usesPreview ? previewSrc : graphMediaSrc;
       const mediaFrame = document.createElement("div");
       mediaFrame.className = "project-media-frame";
       if (shouldRoundMedia) {
@@ -7367,6 +7500,9 @@ function createProjectNode(project) {
         mediaElement.setAttribute("playsinline", "");
         mediaElement.setAttribute("webkit-playsinline", "");
         mediaElement.setAttribute("controlslist", "nodownload noplaybackrate noremoteplayback nofullscreen");
+        if (usesPreview) {
+          mediaElement.poster = previewSrc;
+        }
         if (typeof graphProxy?.posterSrc === "string" && graphProxy.posterSrc.trim()) {
           mediaElement.poster = graphProxy.posterSrc.trim();
         }
@@ -7405,15 +7541,17 @@ function createProjectNode(project) {
         !renderVideoAsPoster && usesGraphProxy && typeof graphProxy?.posterSrc === "string" ? graphProxy.posterSrc : "";
       mediaElement.dataset.proxyMatte = usesGraphProxy && typeof graphProxy?.matte === "string" ? graphProxy.matte : "";
       mediaElement.dataset.proxyActive = !renderVideoAsPoster && isContentNode && usesGraphProxy ? "true" : "false";
+      mediaElement.dataset.previewSrc = usesPreview ? previewSrc : "";
+      mediaElement.dataset.previewActive = usesPreview ? "true" : "false";
       mediaElement.dataset.videoPosterOnly = "false";
       if (isContentNode) {
-        mediaElement.dataset.deferredSrc = renderVideoAsPoster ? videoPosterSrc || mediaFar.src : graphMediaSrc;
+        mediaElement.dataset.deferredSrc = renderVideoAsPoster ? motionPosterSrc || mediaFar.src : lightweightMediaSrc;
         mediaElement.dataset.mediaHydrated = "false";
         if (isVideo && !renderVideoAsPoster) {
           mediaElement.preload = "none";
         }
       } else {
-        mediaElement.src = renderVideoAsPoster ? videoPosterSrc || mediaFar.src : mediaFar.src;
+        mediaElement.src = renderVideoAsPoster ? motionPosterSrc || mediaFar.src : usesPreview ? previewSrc : mediaFar.src;
         mediaElement.dataset.mediaHydrated = "true";
         if (isVideo && !renderVideoAsPoster) {
           if (mediaElement.readyState >= 1 && mediaElement.videoWidth > 0 && mediaElement.videoHeight > 0) {

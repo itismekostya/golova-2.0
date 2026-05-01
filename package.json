@@ -8,6 +8,7 @@
     "images:avif": "node tools/optimize-memory-images.mjs write --format=avif",
     "images:avif-replace": "node tools/optimize-memory-images.mjs avif-replace",
     "media:scaffold": "node tools/scaffold-project-media.mjs",
+    "media:previews": "node tools/build-media-previews.mjs",
     "videos:audit": "node tools/optimize-memory-videos.mjs audit",
     "videos:mp4": "node tools/optimize-memory-videos.mjs mp4",
     "videos:mp4-replace": "node tools/optimize-memory-videos.mjs mp4-replace"
