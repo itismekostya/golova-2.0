@@ -1399,6 +1399,11 @@ body.is-deep-mode .project-node.is-deep-root.is-deep-root-media-hidden .project-
     display: none;
   }
 
+  .project-media {
+    content-visibility: visible;
+    contain-intrinsic-size: auto;
+  }
+
   body.is-deep-mode .project-node.is-deep-root .project-media-note,
   body.is-deep-mode .project-node.is-deep-item .project-media-note {
     display: none;

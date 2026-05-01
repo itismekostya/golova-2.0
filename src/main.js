@@ -148,12 +148,18 @@ const MEDIA_HYDRATION_ROOT_MARGIN_PX = 300;
 const MOBILE_MEDIA_HYDRATION_ROOT_MARGIN_PX = 120;
 const MEDIA_EVICTION_ROOT_MARGIN_PX = 1500;
 const MOBILE_MEDIA_EVICTION_ROOT_MARGIN_PX = 520;
+const DESKTOP_MEDIA_HYDRATION_BATCH_SIZE = 18;
+const MOBILE_MEDIA_HYDRATION_BATCH_SIZE = 4;
 const DISABLE_ALL_VIDEO_MEDIA = false;
 const DISABLE_MOBILE_VIDEO_MEDIA = true;
 const HIDE_MOBILE_MOTION_MEDIA = true;
 const USE_CONTENT_MEDIA_PREVIEWS = true;
 const USE_MOBILE_BOUNDED_FULL_MEDIA = true;
 const USE_GRAPH_MEDIA_PROXIES = false;
+const DESKTOP_HEAD_MAX_PIXEL_RATIO = 2;
+const MOBILE_HEAD_MAX_PIXEL_RATIO = 1.35;
+const MOBILE_DEEP_HEAD_MAX_PIXEL_RATIO = 1.2;
+const MOBILE_HEAD_RENDER_FPS = 30;
 const HEAD_MODEL_SRC = "./assets/head/golova_model.glb";
 const HEAD_USE_BAKED_TEXTURE = true;
 const HEAD_BAKED_TEXTURE_NEUTRALIZE = false;
@@ -339,6 +345,8 @@ let headRenderer = null;
 let headModelRoot = null;
 let headRenderWidth = 0;
 let headRenderHeight = 0;
+let headRenderPixelRatio = 0;
+let headLastRenderTime = 0;
 let headPointerTargetX = 0;
 let headPointerTargetY = 0;
 let headPointerX = 0;
@@ -378,6 +386,10 @@ let mountedContentSourceSlug = null;
 let desiredPrewarmContentSourceSlug = null;
 let contentPrewarmTimeoutId = null;
 let promotedDeepMediaElement = null;
+let mediaHydrationQueue = [];
+const queuedMediaHydrationElements = new Set();
+let mediaHydrationRafId = null;
+const worldCssVarCache = new Map();
 
 function clearFocusedMediaTarget() {
   state.focusedMediaIndex = -1;
@@ -762,6 +774,15 @@ function clearPendingContentPrewarm() {
     clearTimeout(contentPrewarmTimeoutId);
     contentPrewarmTimeoutId = null;
   }
+}
+
+function cancelQueuedMediaHydration() {
+  if (mediaHydrationRafId != null) {
+    cancelAnimationFrame(mediaHydrationRafId);
+    mediaHydrationRafId = null;
+  }
+  mediaHydrationQueue = [];
+  queuedMediaHydrationElements.clear();
 }
 
 function releaseContentNodeMedia(node) {
@@ -1789,9 +1810,87 @@ function hydrateNodeMedia(slug) {
   return changed;
 }
 
-function hydrateDeepProjectMedia(sourceSlug) {
+function getMediaHydrationBatchSize() {
+  return isMobileMediaMode() ? MOBILE_MEDIA_HYDRATION_BATCH_SIZE : DESKTOP_MEDIA_HYDRATION_BATCH_SIZE;
+}
+
+function runQueuedMediaHydration() {
+  mediaHydrationRafId = null;
+  const batchSize = getMediaHydrationBatchSize();
+  let processed = 0;
+  while (mediaHydrationQueue.length && processed < batchSize) {
+    const item = mediaHydrationQueue.shift();
+    const mediaElement = item?.mediaElement;
+    if (!mediaElement) {
+      continue;
+    }
+    queuedMediaHydrationElements.delete(mediaElement);
+    if (!mediaElement.isConnected || mediaElement.dataset.mediaHydrated === "true") {
+      continue;
+    }
+    hydrateDeferredProjectMediaElement(item.slug, item.mediaIndex, mediaElement);
+    observeVideoForPlayback(mediaElement);
+    observeMediaForEviction(mediaElement);
+    processed += 1;
+  }
+  if (mediaHydrationQueue.length) {
+    mediaHydrationRafId = requestAnimationFrame(runQueuedMediaHydration);
+  }
+}
+
+function queueProjectMediaHydration(slug, mediaIndex, mediaElement) {
+  if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
+    return false;
+  }
+  if (mediaElement.dataset.mediaHydrated === "true" || queuedMediaHydrationElements.has(mediaElement)) {
+    return false;
+  }
+  queuedMediaHydrationElements.add(mediaElement);
+  mediaHydrationQueue.push({ slug, mediaIndex, mediaElement });
+  if (mediaHydrationRafId == null) {
+    mediaHydrationRafId = requestAnimationFrame(runQueuedMediaHydration);
+  }
+  return true;
+}
+
+function hydrateOrQueueDeferredProjectMediaElement(slug, mediaIndex, mediaElement) {
+  if (isMobileMediaMode()) {
+    return queueProjectMediaHydration(slug, mediaIndex, mediaElement);
+  }
+  return hydrateDeferredProjectMediaElement(slug, mediaIndex, mediaElement);
+}
+
+function queueNodeMediaHydration(slug) {
+  if (!slug) {
+    return false;
+  }
+  const node = nodeBySlug.get(slug);
+  if (!node) {
+    return false;
+  }
+
+  let queued = false;
+  for (const mediaElement of node.querySelectorAll(".project-media")) {
+    const mediaIndex = Number.parseInt(mediaElement.dataset.mediaIndex || "0", 10);
+    if (hydrateOrQueueDeferredProjectMediaElement(slug, mediaIndex, mediaElement)) {
+      queued = true;
+    }
+  }
+  return queued;
+}
+
+function hydrateDeepProjectMedia(sourceSlug, { queued = isMobileMediaMode() } = {}) {
   if (!sourceSlug) {
     return false;
+  }
+  if (queued) {
+    let changed = queueNodeMediaHydration(sourceSlug);
+    for (const childSlug of getContentChildSlugs(sourceSlug)) {
+      if (queueNodeMediaHydration(childSlug)) {
+        changed = true;
+      }
+    }
+    return changed;
   }
   let changed = hydrateNodeMedia(sourceSlug);
   for (const childSlug of getContentChildSlugs(sourceSlug)) {
@@ -1842,7 +1941,7 @@ function getLazyMediaHydrationObserver() {
         const el = entry.target;
         const slug = typeof el.dataset.projectSlug === "string" ? el.dataset.projectSlug : "";
         const idx = Number.parseInt(el.dataset.mediaIndex || "0", 10);
-        hydrateDeferredProjectMediaElement(slug, idx, el);
+        hydrateOrQueueDeferredProjectMediaElement(slug, idx, el);
         lazyMediaHydrationObserver.unobserve(el);
         observeVideoForPlayback(el);
         observeMediaForEviction(el);
@@ -1974,7 +2073,7 @@ function observeMediaForLazyHydration(mediaElement) {
     // fallback: synchronously hydrate if IO is unavailable
     const slug = typeof mediaElement.dataset.projectSlug === "string" ? mediaElement.dataset.projectSlug : "";
     const idx = Number.parseInt(mediaElement.dataset.mediaIndex || "0", 10);
-    return hydrateDeferredProjectMediaElement(slug, idx, mediaElement);
+    return hydrateOrQueueDeferredProjectMediaElement(slug, idx, mediaElement);
   }
   observer.observe(mediaElement);
   return false;
@@ -4435,12 +4534,25 @@ function resizeHeadRendererToHost(force = false) {
   }
   const width = Math.max(1, Math.round(window.innerWidth || headCanvasHostEl.clientWidth || 1));
   const height = Math.max(1, Math.round(window.innerHeight || headCanvasHostEl.clientHeight || 1));
-  if (!force && width === headRenderWidth && height === headRenderHeight) {
+  const maxPixelRatio =
+    isMobileMediaMode()
+      ? state.deepProjectSlug
+        ? MOBILE_DEEP_HEAD_MAX_PIXEL_RATIO
+        : MOBILE_HEAD_MAX_PIXEL_RATIO
+      : DESKTOP_HEAD_MAX_PIXEL_RATIO;
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio);
+  if (
+    !force &&
+    width === headRenderWidth &&
+    height === headRenderHeight &&
+    Math.abs(pixelRatio - headRenderPixelRatio) < 0.01
+  ) {
     return;
   }
   headRenderWidth = width;
   headRenderHeight = height;
-  headRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  headRenderPixelRatio = pixelRatio;
+  headRenderer.setPixelRatio(pixelRatio);
   headRenderer.setSize(width, height, false);
   headCamera.aspect = width / Math.max(1, height);
   headCamera.updateProjectionMatrix();
@@ -4715,7 +4827,12 @@ function initHeadThreeScene() {
   headRaycaster = new ThreeLib.Raycaster();
   headPointerNdc = new ThreeLib.Vector2();
 
-  headRenderer = new ThreeLib.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+  const mobileRendererMode = isMobileMediaMode();
+  headRenderer = new ThreeLib.WebGLRenderer({
+    antialias: !mobileRendererMode,
+    alpha: true,
+    powerPreference: mobileRendererMode ? "low-power" : "high-performance"
+  });
   configureHeadRendererPipeline(ThreeLib);
   headCanvasHostEl.textContent = "";
   headCanvasHostEl.append(headRenderer.domElement);
@@ -4762,6 +4879,14 @@ function updateHeadWidgetFrame() {
   if (!headRenderer || !headScene || !headCamera) {
     return;
   }
+  const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+  if (isMobileMediaMode()) {
+    const minFrameMs = 1000 / Math.max(1, MOBILE_HEAD_RENDER_FPS);
+    if (headLastRenderTime > 0 && now - headLastRenderTime < minFrameMs) {
+      return;
+    }
+  }
+  headLastRenderTime = now;
   resizeHeadRendererToHost();
   if (!headModelRoot || !headModelLoaded) {
     headRenderer.render(headScene, headCamera);
@@ -4770,7 +4895,6 @@ function updateHeadWidgetFrame() {
 
   const pose = getHeadPoseTargets();
   if (headPoseAnim) {
-    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
     const duration = Math.max(1, headPoseAnim.duration || HEAD_POSE_DURATION_MS);
     const t = clamp((now - headPoseAnim.start) / duration, 0, 1);
     const eased = 1 - (1 - t) * (1 - t);
@@ -6061,6 +6185,7 @@ function setDeepProject(
     promotedDeepMediaElement = null;
   }
   clearPendingContentPrewarm();
+  cancelQueuedMediaHydration();
   desiredPrewarmContentSourceSlug = null;
   syncMountedContentSubtree({ refreshVisibility: false });
   if (state.deepProjectSlug && state.headModalOpen) {
@@ -10535,6 +10660,19 @@ function screenToWorld(clientX, clientY, rect, viewX, viewY, viewZoom) {
   };
 }
 
+function setWorldNumberProperty(name, value, { epsilon = 0.0005, unit = "" } = {}) {
+  if (!name || !Number.isFinite(value)) {
+    return false;
+  }
+  const prev = worldCssVarCache.get(name);
+  if (Number.isFinite(prev) && Math.abs(prev - value) <= epsilon) {
+    return false;
+  }
+  worldCssVarCache.set(name, value);
+  world.style.setProperty(name, `${value}${unit}`);
+  return true;
+}
+
 function setTargetView(x, y, zoom, maxZoom = MAX_ZOOM) {
   state.targetX = x;
   state.targetY = y;
@@ -10670,12 +10808,12 @@ function tick() {
     CONTENT_MEDIA_NOTE_GAP
   );
   const mediaNoteGapLocal = mediaNoteGapScreen / mediaScreenScale;
-  world.style.setProperty("--media-note-gap-local", `${mediaNoteGapLocal}px`);
+  setWorldNumberProperty("--media-note-gap-local", mediaNoteGapLocal, { epsilon: 0.02, unit: "px" });
   const mediaNoteContentScale = 1 / mediaScreenScale;
-  world.style.setProperty("--media-note-content-scale", `${mediaNoteContentScale}`);
+  setWorldNumberProperty("--media-note-content-scale", mediaNoteContentScale);
   const mediaNoteWidthScale = mediaMaxScreenScale * CONTENT_MEDIA_NOTE_WIDTH_FACTOR;
-  world.style.setProperty("--media-note-width-scale", `${mediaNoteWidthScale}`);
-  world.style.setProperty("--media-max-screen-scale", `${mediaMaxScreenScale}`);
+  setWorldNumberProperty("--media-note-width-scale", mediaNoteWidthScale);
+  setWorldNumberProperty("--media-max-screen-scale", mediaMaxScreenScale);
   let deepNoteHeadVisibility = detailsVisibility;
   let deepNoteBodyVisibility = detailsVisibility;
   if (state.deepProjectSlug) {
@@ -10688,8 +10826,8 @@ function tick() {
     deepNoteHeadVisibility = clamp((state.viewZoom - headFadeStart) / headFadeRange, 0, 1);
     deepNoteBodyVisibility = clamp((state.viewZoom - bodyFadeStart) / bodyFadeRange, 0, 1);
   }
-  world.style.setProperty("--deep-note-head-visibility", `${deepNoteHeadVisibility}`);
-  world.style.setProperty("--deep-note-body-visibility", `${deepNoteBodyVisibility}`);
+  setWorldNumberProperty("--deep-note-head-visibility", deepNoteHeadVisibility);
+  setWorldNumberProperty("--deep-note-body-visibility", deepNoteBodyVisibility);
   if (state.activeType === "physical" && !state.deepProjectSlug && state.physicalOverviewTitlesHeldHidden) {
     const homeZoom = clamp(state.filterHomeZoom || getActiveOverviewHome().zoom || MIN_ZOOM, MIN_ZOOM, MAX_ZOOM);
     const zoomSettled =
