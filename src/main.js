@@ -164,9 +164,6 @@ const USE_CONTENT_MEDIA_PREVIEWS = true;
 const USE_MOBILE_BOUNDED_FULL_MEDIA = true;
 const USE_GRAPH_MEDIA_PROXIES = false;
 const DESKTOP_HEAD_MAX_PIXEL_RATIO = 2;
-const MOBILE_HEAD_MAX_PIXEL_RATIO = 1.35;
-const MOBILE_DEEP_HEAD_MAX_PIXEL_RATIO = 1.2;
-const MOBILE_HEAD_RENDER_FPS = 30;
 const HEAD_MODEL_SRC = "./assets/head/golova_model.glb";
 const HEAD_USE_BAKED_TEXTURE = true;
 const HEAD_BAKED_TEXTURE_NEUTRALIZE = false;
@@ -4568,13 +4565,7 @@ function resizeHeadRendererToHost(force = false) {
   }
   const width = Math.max(1, Math.round(window.innerWidth || headCanvasHostEl.clientWidth || 1));
   const height = Math.max(1, Math.round(window.innerHeight || headCanvasHostEl.clientHeight || 1));
-  const maxPixelRatio =
-    isMobileMediaMode()
-      ? state.deepProjectSlug
-        ? MOBILE_DEEP_HEAD_MAX_PIXEL_RATIO
-        : MOBILE_HEAD_MAX_PIXEL_RATIO
-      : DESKTOP_HEAD_MAX_PIXEL_RATIO;
-  const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio);
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, DESKTOP_HEAD_MAX_PIXEL_RATIO);
   if (
     !force &&
     width === headRenderWidth &&
@@ -4861,11 +4852,10 @@ function initHeadThreeScene() {
   headRaycaster = new ThreeLib.Raycaster();
   headPointerNdc = new ThreeLib.Vector2();
 
-  const mobileRendererMode = isMobileMediaMode();
   headRenderer = new ThreeLib.WebGLRenderer({
-    antialias: !mobileRendererMode,
+    antialias: true,
     alpha: true,
-    powerPreference: mobileRendererMode ? "low-power" : "high-performance"
+    powerPreference: "high-performance"
   });
   configureHeadRendererPipeline(ThreeLib);
   headCanvasHostEl.textContent = "";
@@ -4914,12 +4904,6 @@ function updateHeadWidgetFrame() {
     return;
   }
   const now = typeof performance !== "undefined" ? performance.now() : Date.now();
-  if (isMobileMediaMode()) {
-    const minFrameMs = 1000 / Math.max(1, MOBILE_HEAD_RENDER_FPS);
-    if (headLastRenderTime > 0 && now - headLastRenderTime < minFrameMs) {
-      return;
-    }
-  }
   headLastRenderTime = now;
   resizeHeadRendererToHost();
   if (!headModelRoot || !headModelLoaded) {
