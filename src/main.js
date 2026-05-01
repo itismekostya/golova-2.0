@@ -152,6 +152,7 @@ const DISABLE_ALL_VIDEO_MEDIA = false;
 const DISABLE_MOBILE_VIDEO_MEDIA = true;
 const HIDE_MOBILE_MOTION_MEDIA = true;
 const USE_CONTENT_MEDIA_PREVIEWS = true;
+const USE_MOBILE_BOUNDED_FULL_MEDIA = true;
 const USE_GRAPH_MEDIA_PROXIES = false;
 const HEAD_MODEL_SRC = "./assets/head/golova_model.glb";
 const HEAD_USE_BAKED_TEXTURE = true;
@@ -778,6 +779,7 @@ function releaseContentNodeMedia(node) {
     mediaElement.dataset.mediaHydrated = "false";
     mediaElement.dataset.deferredSrc = previewSrc || originalSrc;
     mediaElement.dataset.previewActive = previewSrc ? "true" : "false";
+    mediaElement.dataset.mobileActive = "false";
     unobserveMediaElement(mediaElement);
 
     if (mediaElement instanceof HTMLVideoElement) {
@@ -1525,6 +1527,11 @@ function getMediaPreviewSrcByMediaSrc(src) {
   return typeof preview?.src === "string" && preview.src.trim() ? preview.src.trim() : "";
 }
 
+function getMobileMediaSrcByMediaSrc(src) {
+  const preview = getMediaPreviewBySrc(src);
+  return typeof preview?.mobileSrc === "string" && preview.mobileSrc.trim() ? preview.mobileSrc.trim() : "";
+}
+
 function getPreferredGraphProxySrc(entry) {
   if (!entry || typeof entry !== "object") {
     return "";
@@ -1570,6 +1577,10 @@ function shouldDisableVideoPlayback() {
 
 function shouldHideMotionMediaOnMobile(src) {
   return HIDE_MOBILE_MOTION_MEDIA && isMobileMediaMode() && isMotionMediaSrc(src);
+}
+
+function shouldUseMobileBoundedFullMedia() {
+  return USE_MOBILE_BOUNDED_FULL_MEDIA && isMobileMediaMode();
 }
 
 function getVideoPosterSrcByMediaSrc(src) {
@@ -1892,6 +1903,7 @@ function evictHydratedMediaElement(mediaElement) {
   mediaElement.dataset.mediaHydrated = "false";
   mediaElement.dataset.deferredSrc = previewSrc || originalSrc;
   mediaElement.dataset.previewActive = previewSrc ? "true" : "false";
+  mediaElement.dataset.mobileActive = "false";
 
   if (mediaElement instanceof HTMLVideoElement) {
     try {
@@ -2010,6 +2022,10 @@ function getMediaElementPreviewSrc(mediaElement) {
   return typeof mediaElement?.dataset?.previewSrc === "string" ? mediaElement.dataset.previewSrc.trim() : "";
 }
 
+function getMediaElementMobileSrc(mediaElement) {
+  return typeof mediaElement?.dataset?.mobileSrc === "string" ? mediaElement.dataset.mobileSrc.trim() : "";
+}
+
 function getMediaElementFullSrc(mediaElement) {
   return typeof mediaElement?.dataset?.mediaSrc === "string" ? mediaElement.dataset.mediaSrc.trim() : "";
 }
@@ -2028,6 +2044,14 @@ function mediaElementUsesPreviewSource(mediaElement) {
     return false;
   }
   return mediaElement?.dataset?.previewActive === "true";
+}
+
+function mediaElementUsesMobileSource(mediaElement) {
+  const mobileSrc = getMediaElementMobileSrc(mediaElement);
+  if (!mobileSrc) {
+    return false;
+  }
+  return mediaElement?.dataset?.mobileActive === "true";
 }
 
 function getResolvedMediaElementProxySrc(mediaElement) {
@@ -2237,6 +2261,8 @@ function setVideoElementToPosterOnly(videoElement) {
   }
 
   videoElement.dataset.proxyActive = "true";
+  videoElement.dataset.previewActive = "false";
+  videoElement.dataset.mobileActive = "false";
   videoElement.dataset.videoPosterOnly = "true";
   videoElement.poster = posterSrc;
   clearVideoElementPlaybackSource(videoElement);
@@ -2271,6 +2297,8 @@ function setVideoElementToPreviewPosterOnly(videoElement) {
   }
 
   videoElement.dataset.previewActive = "true";
+  videoElement.dataset.proxyActive = "false";
+  videoElement.dataset.mobileActive = "false";
   videoElement.dataset.videoPosterOnly = "true";
   videoElement.poster = previewSrc;
   return clearVideoElementPlaybackSource(videoElement);
@@ -2290,6 +2318,8 @@ function demoteMediaElementToProxy(mediaElement) {
   }
 
   mediaElement.dataset.proxyActive = "true";
+  mediaElement.dataset.previewActive = "false";
+  mediaElement.dataset.mobileActive = "false";
   mediaElement.dataset.videoPosterOnly = "false";
   mediaElement.src = getResolvedMediaElementProxySrc(mediaElement) || proxySrc;
   if (mediaElement instanceof HTMLVideoElement) {
@@ -2313,11 +2343,14 @@ function demoteMediaElementToPreview(mediaElement) {
 
   mediaElement.dataset.proxyActive = "false";
   mediaElement.dataset.previewActive = "true";
+  mediaElement.dataset.mobileActive = "false";
   if (mediaElement instanceof HTMLVideoElement) {
     return setVideoElementToPreviewPosterOnly(mediaElement);
   }
 
   mediaElement.dataset.videoPosterOnly = "false";
+  mediaElement.removeAttribute("src");
+  mediaElement.src = "";
   mediaElement.src = previewSrc;
   return true;
 }
@@ -2327,6 +2360,50 @@ function demoteMediaElementToLightweightSource(mediaElement) {
     return true;
   }
   return demoteMediaElementToPreview(mediaElement);
+}
+
+function setMediaElementToMobileSource(mediaElement, { trackPromotion = false } = {}) {
+  if (!(mediaElement instanceof HTMLImageElement) && !(mediaElement instanceof HTMLVideoElement)) {
+    return false;
+  }
+  const mobileSrc = getMediaElementMobileSrc(mediaElement);
+  if (!mobileSrc) {
+    return false;
+  }
+  if (mediaElement instanceof HTMLVideoElement) {
+    mediaElement.dataset.proxyActive = "false";
+    mediaElement.dataset.previewActive = "false";
+    mediaElement.dataset.mobileActive = "true";
+    mediaElement.dataset.videoPosterOnly = "true";
+    mediaElement.poster = mobileSrc;
+    clearVideoElementPlaybackSource(mediaElement);
+    if (trackPromotion) {
+      promotedDeepMediaElement = mediaElement;
+    }
+    return true;
+  }
+  if (getMediaSrcKey(mobileSrc) === getMediaSrcKey(mediaElement.currentSrc || mediaElement.src || "")) {
+    mediaElement.dataset.proxyActive = "false";
+    mediaElement.dataset.previewActive = "false";
+    mediaElement.dataset.mobileActive = "true";
+    mediaElement.dataset.videoPosterOnly = "false";
+    if (trackPromotion) {
+      promotedDeepMediaElement = mediaElement;
+    }
+    return false;
+  }
+
+  mediaElement.dataset.proxyActive = "false";
+  mediaElement.dataset.previewActive = "false";
+  mediaElement.dataset.mobileActive = "true";
+  mediaElement.dataset.videoPosterOnly = "false";
+  mediaElement.removeAttribute("src");
+  mediaElement.src = "";
+  mediaElement.src = mobileSrc;
+  if (trackPromotion) {
+    promotedDeepMediaElement = mediaElement;
+  }
+  return true;
 }
 
 function setMediaElementToFullSource(mediaElement, { trackPromotion = false } = {}) {
@@ -2339,6 +2416,9 @@ function setMediaElementToFullSource(mediaElement, { trackPromotion = false } = 
   if (!fullSrc || (!proxySrc && !previewSrc)) {
     return false;
   }
+  if (shouldUseMobileBoundedFullMedia() && getMediaElementMobileSrc(mediaElement)) {
+    return setMediaElementToMobileSource(mediaElement, { trackPromotion });
+  }
   if (shouldDisableVideoPlayback() && isMotionMediaSrc(fullSrc)) {
     if (!demoteMediaElementToLightweightSource(mediaElement) && mediaElement instanceof HTMLVideoElement) {
       clearVideoElementPlaybackSource(mediaElement);
@@ -2348,6 +2428,7 @@ function setMediaElementToFullSource(mediaElement, { trackPromotion = false } = 
   if (getMediaSrcKey(fullSrc) === getMediaSrcKey(mediaElement.currentSrc || mediaElement.src || "")) {
     mediaElement.dataset.proxyActive = "false";
     mediaElement.dataset.previewActive = "false";
+    mediaElement.dataset.mobileActive = "false";
     mediaElement.dataset.videoPosterOnly = "false";
     if (trackPromotion) {
       promotedDeepMediaElement = mediaElement;
@@ -2357,7 +2438,10 @@ function setMediaElementToFullSource(mediaElement, { trackPromotion = false } = 
 
   mediaElement.dataset.proxyActive = "false";
   mediaElement.dataset.previewActive = "false";
+  mediaElement.dataset.mobileActive = "false";
   mediaElement.dataset.videoPosterOnly = "false";
+  mediaElement.removeAttribute("src");
+  mediaElement.src = "";
   mediaElement.src = fullSrc;
   if (mediaElement instanceof HTMLVideoElement) {
     mediaElement.preload = "metadata";
@@ -2380,7 +2464,33 @@ function clearPromotedDeepMediaElement() {
   promotedDeepMediaElement = null;
 }
 
+function demoteConnectedDeepMediaToLightweight({ except = null } = {}) {
+  if (!state.deepProjectSlug) {
+    return false;
+  }
+  let changed = false;
+  for (const mediaElement of world.querySelectorAll(".project-media")) {
+    if (except && mediaElement === except) {
+      continue;
+    }
+    const node = mediaElement.closest(".project-node");
+    const slug = typeof node?.dataset?.slug === "string" ? node.dataset.slug : "";
+    const model = slug ? modelBySlug.get(slug) : null;
+    if (!model || !model.visible) {
+      continue;
+    }
+    if (demoteMediaElementToLightweightSource(mediaElement)) {
+      changed = true;
+    }
+  }
+  if (promotedDeepMediaElement && promotedDeepMediaElement !== except) {
+    promotedDeepMediaElement = null;
+  }
+  return changed;
+}
+
 function promoteMediaElementToFullSource(mediaElement) {
+  demoteConnectedDeepMediaToLightweight({ except: mediaElement });
   if (promotedDeepMediaElement && promotedDeepMediaElement !== mediaElement) {
     demoteMediaElementToLightweightSource(promotedDeepMediaElement);
   }
@@ -2442,7 +2552,11 @@ function handleProjectMediaElementLoad(slug, mediaIndex, mediaElement) {
     return;
   }
 
-  if (mediaElementUsesProxySource(mediaElement) || mediaElementUsesPreviewSource(mediaElement)) {
+  if (
+    mediaElementUsesProxySource(mediaElement) ||
+    mediaElementUsesPreviewSource(mediaElement) ||
+    mediaElementUsesMobileSource(mediaElement)
+  ) {
     return;
   }
 
@@ -7500,6 +7614,7 @@ function createProjectNode(project) {
       const usesGraphProxy = Boolean(USE_GRAPH_MEDIA_PROXIES && graphProxy && graphMediaSrc && graphMediaSrc !== mediaFar.src);
       const shouldUsePreview = USE_CONTENT_MEDIA_PREVIEWS && (isContentNode || isMobileMediaMode());
       const previewSrc = shouldUsePreview ? getMediaPreviewSrcByMediaSrc(mediaFar.src) : "";
+      const mobileMediaSrc = getMobileMediaSrcByMediaSrc(mediaFar.src);
       const usesPreview = Boolean(previewSrc && previewSrc !== mediaFar.src);
       const motionPosterSrc = previewSrc || videoPosterSrc;
       const renderVideoAsPoster = isMotion && shouldDisableVideoPlayback() && Boolean(motionPosterSrc);
@@ -7575,6 +7690,8 @@ function createProjectNode(project) {
       mediaElement.dataset.proxyActive = !renderVideoAsPoster && isContentNode && usesGraphProxy ? "true" : "false";
       mediaElement.dataset.previewSrc = usesPreview ? previewSrc : "";
       mediaElement.dataset.previewActive = usesPreview ? "true" : "false";
+      mediaElement.dataset.mobileSrc = mobileMediaSrc && mobileMediaSrc !== mediaFar.src ? mobileMediaSrc : "";
+      mediaElement.dataset.mobileActive = "false";
       mediaElement.dataset.videoPosterOnly = "false";
       if (isContentNode) {
         mediaElement.dataset.deferredSrc = renderVideoAsPoster ? motionPosterSrc || mediaFar.src : lightweightMediaSrc;
@@ -9528,6 +9645,16 @@ function bindEvents() {
   });
   window.addEventListener("popstate", () => {
     applyProjectGraphLocation({ animate: true });
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      clearPromotedDeepMediaElement();
+      demoteConnectedDeepMediaToLightweight();
+    }
+  });
+  window.addEventListener("pagehide", () => {
+    clearPromotedDeepMediaElement();
+    demoteConnectedDeepMediaToLightweight();
   });
 
   const handleViewportResize = () => {

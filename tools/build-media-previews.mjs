@@ -12,8 +12,10 @@ const execFileAsync = promisify(execFile);
 const rootDir = process.cwd();
 const memoryDir = path.join(rootDir, "memory");
 const previewDir = path.join(rootDir, "assets", "previews");
+const mobileMediaDir = path.join(rootDir, "assets", "mobile-media");
 const manifestPath = path.join(rootDir, "src", "media-preview-manifest.js");
 const PREVIEW_LONG_EDGE = 720;
+const MOBILE_MEDIA_LONG_EDGE = 1600;
 
 const IMAGE_EXTS = new Set([".avif", ".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const VIDEO_EXTS = new Set([".mp4", ".m4v", ".mov", ".webm"]);
@@ -53,7 +55,7 @@ function decodeMemorySource(src) {
   return decodeURIComponent(clean);
 }
 
-function getPreviewRelativeParts(src, outputExt) {
+function getDerivedRelativeParts(src, outputExt) {
   const decoded = decodeMemorySource(src);
   const parsed = path.posix.parse(decoded.split(path.sep).join("/"));
   const fileName = `${parsed.base}${outputExt}`;
@@ -61,12 +63,21 @@ function getPreviewRelativeParts(src, outputExt) {
 }
 
 function getPreviewAbsPath(src, outputExt) {
-  return path.join(previewDir, ...getPreviewRelativeParts(src, outputExt));
+  return path.join(previewDir, ...getDerivedRelativeParts(src, outputExt));
+}
+
+function getMobileMediaAbsPath(src, outputExt) {
+  return path.join(mobileMediaDir, ...getDerivedRelativeParts(src, outputExt));
 }
 
 function getPreviewPublicSrc(src, outputExt) {
-  const parts = getPreviewRelativeParts(src, outputExt);
+  const parts = getDerivedRelativeParts(src, outputExt);
   return `./assets/previews/${parts.map((part) => encodeURIComponent(part)).join("/")}`;
+}
+
+function getMobileMediaPublicSrc(src, outputExt) {
+  const parts = getDerivedRelativeParts(src, outputExt);
+  return `./assets/mobile-media/${parts.map((part) => encodeURIComponent(part)).join("/")}`;
 }
 
 function getMemoryAbsPath(src) {
@@ -90,7 +101,7 @@ async function ensureParentDir(filePath) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
 }
 
-async function createImagePreview(sourcePath, outputPath, hasAlpha) {
+async function createImageDerivative(sourcePath, outputPath, hasAlpha, { longEdge, quality }) {
   await ensureParentDir(outputPath);
   const pipeline = sharp(sourcePath, {
     animated: false,
@@ -98,21 +109,35 @@ async function createImagePreview(sourcePath, outputPath, hasAlpha) {
   })
     .rotate()
     .resize({
-      width: PREVIEW_LONG_EDGE,
-      height: PREVIEW_LONG_EDGE,
+      width: longEdge,
+      height: longEdge,
       fit: "inside",
       withoutEnlargement: true
     });
 
   if (hasAlpha) {
-    await pipeline.webp({ quality: 82, effort: 4 }).toFile(outputPath);
+    await pipeline.webp({ quality: quality.webp, effort: 4 }).toFile(outputPath);
     return;
   }
 
-  await pipeline.avif({ quality: 54, effort: 4 }).toFile(outputPath);
+  await pipeline.avif({ quality: quality.avif, effort: 4 }).toFile(outputPath);
 }
 
-async function createVideoPoster(sourcePath, outputPath) {
+async function createImagePreview(sourcePath, outputPath, hasAlpha) {
+  await createImageDerivative(sourcePath, outputPath, hasAlpha, {
+    longEdge: PREVIEW_LONG_EDGE,
+    quality: { avif: 54, webp: 82 }
+  });
+}
+
+async function createMobileImage(sourcePath, outputPath, hasAlpha) {
+  await createImageDerivative(sourcePath, outputPath, hasAlpha, {
+    longEdge: MOBILE_MEDIA_LONG_EDGE,
+    quality: { avif: 66, webp: 88 }
+  });
+}
+
+async function createVideoPoster(sourcePath, outputPath, { mobile = false } = {}) {
   const tempPath = `${outputPath}.tmp.png`;
   await ensureParentDir(outputPath);
   try {
@@ -129,7 +154,11 @@ async function createVideoPoster(sourcePath, outputPath) {
       "1",
       tempPath
     ]);
-    await createImagePreview(tempPath, outputPath, true);
+    if (mobile) {
+      await createMobileImage(tempPath, outputPath, true);
+    } else {
+      await createImagePreview(tempPath, outputPath, true);
+    }
   } finally {
     await fs.rm(tempPath, { force: true }).catch(() => {});
   }
@@ -167,7 +196,7 @@ async function buildPreviewForSource(src) {
   if (PASSTHROUGH_EXTS.has(ext)) {
     return {
       src,
-      entry: { src, kind: "passthrough" }
+      entry: { src, mobileSrc: src, kind: "passthrough" }
     };
   }
 
@@ -186,14 +215,20 @@ async function buildPreviewForSource(src) {
     const hasAlpha = Boolean(metadata.hasAlpha);
     const outputExt = hasAlpha || ext === ".gif" ? ".webp" : ".avif";
     const outputPath = getPreviewAbsPath(src, outputExt);
+    const mobileOutputPath = getMobileMediaAbsPath(src, outputExt);
     await createImagePreview(sourcePath, outputPath, hasAlpha || ext === ".gif");
+    await createMobileImage(sourcePath, mobileOutputPath, hasAlpha || ext === ".gif");
     const dims = await getOutputDimensions(outputPath);
+    const mobileDims = await getOutputDimensions(mobileOutputPath);
     return {
       src,
       entry: {
         src: getPreviewPublicSrc(src, outputExt),
         w: dims.w,
         h: dims.h,
+        mobileSrc: getMobileMediaPublicSrc(src, outputExt),
+        mobileW: mobileDims.w,
+        mobileH: mobileDims.h,
         kind: "image-preview",
         preservesAlpha: hasAlpha || ext === ".gif"
       }
@@ -203,14 +238,20 @@ async function buildPreviewForSource(src) {
   if (VIDEO_EXTS.has(ext)) {
     const outputExt = ".webp";
     const outputPath = getPreviewAbsPath(src, outputExt);
+    const mobileOutputPath = getMobileMediaAbsPath(src, outputExt);
     await createVideoPoster(sourcePath, outputPath);
+    await createVideoPoster(sourcePath, mobileOutputPath, { mobile: true });
     const dims = await getOutputDimensions(outputPath);
+    const mobileDims = await getOutputDimensions(mobileOutputPath);
     return {
       src,
       entry: {
         src: getPreviewPublicSrc(src, outputExt),
         w: dims.w,
         h: dims.h,
+        mobileSrc: getMobileMediaPublicSrc(src, outputExt),
+        mobileW: mobileDims.w,
+        mobileH: mobileDims.h,
         kind: "video-poster"
       }
     };
@@ -228,6 +269,7 @@ async function main() {
   const warnings = [];
 
   await fs.mkdir(previewDir, { recursive: true });
+  await fs.mkdir(mobileMediaDir, { recursive: true });
 
   for (const src of sources) {
     try {
